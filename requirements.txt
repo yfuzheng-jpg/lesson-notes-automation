@@ -9,3 +9,4 @@ keyring
 PyJWT[crypto]
 python-docx
 reportlab
+opencc-python-reimplemented==0.1.7

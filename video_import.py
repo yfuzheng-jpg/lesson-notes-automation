@@ -6,6 +6,7 @@ import math
 import threading
 from pathlib import Path
 from typing import Callable
+from transcription import transcription_options, create_simplifier
 
 
 class VideoImportCancelled(RuntimeError):
@@ -224,6 +225,8 @@ class VideoImporter:
             factory = WhisperModel
         else:
             factory = self.model_factory
+        options = transcription_options(getattr(self.settings, "transcription_language", "zh"))
+        simplify = create_simplifier()
         model = factory("base", device="cpu", compute_type="int8")
         self.gate()
         sample_rate = 16000
@@ -234,21 +237,18 @@ class VideoImporter:
         decode_origin = 0.0
         timeline_samples = 0
         reached_end = False
-        detected_language = None
         decoded_samples = 0
 
         def transcribe(samples, offset):
-            nonlocal detected_language
             self.gate()
             self.progress("正在转写视频音轨", offset)
             if np.max(np.abs(samples)) < 1e-5:
                 return
-            segments, info = model.transcribe(samples, language=detected_language,
-                                              vad_filter=True, beam_size=3)
+            segments, _ = model.transcribe(samples, **options)
             lines = []
             for segment in segments:
                 self.gate()
-                text = segment.text.strip()
+                text = simplify(segment.text.strip())
                 if text:
                     first = max(self.start_seconds, offset, offset + segment.start)
                     last = min(offset + len(samples) / sample_rate, offset + segment.end)
@@ -258,7 +258,6 @@ class VideoImporter:
                         lines.append(f"[{timestamp(first)} - {timestamp(last)}] {text}\n")
             self.gate()
             if lines:
-                detected_language = getattr(info, "language", detected_language)
                 with (self.session_dir / "transcript.txt").open("a", encoding="utf-8") as target:
                     target.writelines(lines)
 

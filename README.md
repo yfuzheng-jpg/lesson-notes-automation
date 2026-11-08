@@ -1,5 +1,12 @@
 # 课堂笔记自动整理
 
+## 中文与简体转写修复（2026-11-08）
+
+- 本地视频、实时录课及批量视频导入（如当前版本提供）默认按**中文**转写，并明确使用原文转写任务，不将中文翻译成英文。旧设置未指定转写语言时也默认使用中文。
+- 主界面新增“转写语言”：中文（默认）、英文、自动识别。英文课程可选英文；确需多语言识别时可选自动识别，各音频片段独立检测，不沿用首段误判的语言。
+- 所有新写入转写稿的汉字通过 OpenCC 统一为**简体中文**，保留英文术语、数字、公式和时间标记。此转换处理简繁字形，不会把已识别为英文的句子翻译回中文。
+- 首次更新后请关闭旧窗口，再双击启动器；启动器会安装新增的简繁转换依赖。已保存的错误转写不会自动重写：请重新导入原视频，或重新录制后生成笔记。
+
 ## 项目简介 / Project Overview
 
 **中文**
@@ -127,6 +134,7 @@ OpenAI 官方说明：[Sign in with ChatGPT Quickstart](https://developers.opena
 | MSS | 屏幕截图与显示器枚举 | [BoboTiG/python-mss](https://github.com/BoboTiG/python-mss) | [MIT](https://github.com/BoboTiG/python-mss/blob/main/LICENSE.txt) |
 | SoundCard | 系统回环录音 | [bastibe/SoundCard](https://github.com/bastibe/SoundCard) | [BSD-3-Clause](https://github.com/bastibe/SoundCard) |
 | faster-whisper | 本机语音转写 | [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) | [MIT](https://github.com/SYSTRAN/faster-whisper/blob/master/LICENSE) |
+| opencc-python-reimplemented | 转写文本的繁体转简体；在本机转换，不调用 AI 翻译 | [yichen0831/opencc-python](https://github.com/yichen0831/opencc-python) | [Apache-2.0](https://github.com/yichen0831/opencc-python/blob/master/LICENSE.txt) |
 | PyAV | 本地视频和音轨解码 | [PyAV-Org/PyAV](https://github.com/PyAV-Org/PyAV) | [BSD-3-Clause](https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt)；其二进制包所含解码库有各自许可 |
 | Requests | AI API 网络请求 | [psf/requests](https://github.com/psf/requests) | [Apache-2.0](https://github.com/psf/requests/blob/main/LICENSE) |
 | keyring | 保存 API Key；OAuth 令牌使用 Windows DPAPI 加密文件 | [jaraco/keyring](https://github.com/jaraco/keyring) | [MIT](https://github.com/jaraco/keyring/blob/main/pyproject.toml) |

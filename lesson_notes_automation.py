@@ -22,9 +22,11 @@ from ai_schedule import (validate_window, next_allowed, next_retry, is_usage_lim
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, END, StringVar, Tk, filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Callable
+from transcription import (TRANSCRIPTION_LANGUAGES, normalize_transcription_language,
+                           transcription_options, create_simplifier)
 
 APP_NAME = "课堂笔记自动整理"
-APP_VERSION = "2026.11.07 · 视频片段版"
+APP_VERSION = "2026.11.08 · 视频片段版 · 中文简体转写修复"
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "LessonNotesAutomation"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 KEYRING_SERVICE = "LessonNotesAutomation"
@@ -52,6 +54,7 @@ class Settings:
     custom_format: str = ""
     generation_mode: str = "整章一次生成"
     material_mode: str = "转写＋截图"
+    transcription_language: str = "zh"
     monitor_index: int = 1
     capture_region_only: bool = True
     capture_region: list[int] | None = None
@@ -1008,6 +1011,8 @@ class SessionController:
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "note_name": self.settings.note_name,
             "material_mode": self.settings.material_mode,
+            "transcription_language": self.settings.transcription_language,
+            "transcript_script": "Hans",
             "capture_mode": self.settings.capture_mode,
             "capture_interval_seconds": self.settings.capture_interval_seconds,
             "monitor_index": self.settings.monitor_index,
@@ -1290,14 +1295,16 @@ class SessionController:
             from faster_whisper import WhisperModel
 
             self.on_status("正在加载本地 Whisper 语音模型；首次运行可能需要下载模型…")
+            options = transcription_options(self.settings.transcription_language)
+            simplify = create_simplifier()
             model = WhisperModel("base", device="cpu", compute_type="int8")
             self.on_status("本地语音模型已就绪，正在实时转写…")
             while True:
                 chunk = self.audio_queue.get()
                 if chunk is None:
                     break
-                segments, _ = model.transcribe(chunk, vad_filter=True, beam_size=3)
-                text = "".join(segment.text for segment in segments).strip()
+                segments, _ = model.transcribe(chunk, **options)
+                text = simplify("".join(segment.text for segment in segments).strip())
                 if text:
                     stamp = datetime.now().strftime("[%H:%M:%S]")
                     with self.transcript_lock:
@@ -1583,6 +1590,7 @@ class LessonNotesApp:
         self.custom_format_var = StringVar()
         self.generation_mode_var = StringVar()
         self.material_mode_var = StringVar()
+        self.transcription_language_var = StringVar()
         self.ai_schedule_enabled_var = BooleanVar()
         self.ai_schedule_start_var = StringVar()
         self.ai_schedule_end_var = StringVar()
@@ -1690,6 +1698,13 @@ class LessonNotesApp:
         ttk.Entry(name_line, textvariable=self.name_var).grid(row=0, column=0, sticky="ew")
         ttk.Label(name_line, text="素材模式").grid(row=0, column=1, padx=(12, 4))
         ttk.Combobox(name_line, textvariable=self.material_mode_var, values=["仅截图", "仅转写", "转写＋截图"], state="readonly", width=14).grid(row=0, column=2)
+        speech_line = ttk.Frame(name_line)
+        speech_line.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(speech_line, text="转写语言").pack(side="left", padx=(0, 8))
+        ttk.Combobox(speech_line, name="transcription_language",
+                     textvariable=self.transcription_language_var,
+                     values=list(TRANSCRIPTION_LANGUAGES), state="readonly", width=24).pack(side="left")
+        ttk.Label(speech_line, text="  汉字统一为简体；保留英文术语。", foreground="#666").pack(side="left")
         label_row(9, "笔记文件名", name_line)
         output_line = ttk.Frame(form)
         format_box = ttk.Combobox(output_line, textvariable=self.format_var, values=FORMATS, state="readonly", width=22)
@@ -1890,6 +1905,9 @@ class LessonNotesApp:
         self.custom_format_var.set(self.settings.custom_format)
         self.generation_mode_var.set(self.settings.generation_mode)
         self.material_mode_var.set(self.settings.material_mode)
+        language_labels = {code: label for label, code in TRANSCRIPTION_LANGUAGES.items()}
+        self.transcription_language_var.set(language_labels.get(
+            self.settings.transcription_language, language_labels["zh"]))
         self.ai_schedule_enabled_var.set(self.settings.ai_schedule_enabled)
         self.ai_schedule_start_var.set(self.settings.ai_schedule_start)
         self.ai_schedule_end_var.set(self.settings.ai_schedule_end)
@@ -2337,7 +2355,7 @@ class LessonNotesApp:
             return
         modules = ["av", "numpy", "PIL", "video_import"]
         if self.settings.material_mode != "仅截图":
-            modules.append("faster_whisper")
+            modules.extend(["faster_whisper", "opencc"])
         missing = [name for name in modules if importlib.util.find_spec(name) is None]
         if missing:
             messagebox.showerror("缺少依赖", "请双击启动器安装依赖后重试：\n" + ", ".join(missing))
@@ -2459,6 +2477,7 @@ class LessonNotesApp:
             custom_format=custom_format,
             generation_mode=self.generation_mode_var.get(),
             material_mode=self.material_mode_var.get(),
+            transcription_language=normalize_transcription_language(self.transcription_language_var.get()),
             ai_schedule_enabled=self.ai_schedule_enabled_var.get(),
             ai_schedule_start=self.ai_schedule_start_var.get().strip(),
             ai_schedule_end=self.ai_schedule_end_var.get().strip(),
@@ -2520,7 +2539,7 @@ class LessonNotesApp:
         if self.settings.material_mode != "仅转写":
             needed_modules.extend(["mss", "PIL"])
         if self.settings.material_mode != "仅截图":
-            needed_modules.extend(["soundcard", "faster_whisper", "numpy"])
+            needed_modules.extend(["soundcard", "faster_whisper", "numpy", "opencc"])
         if self.settings.provider == "chatgpt_oauth":
             needed_modules.append("jwt")
         missing = [module for module in needed_modules if importlib.util.find_spec(module) is None]

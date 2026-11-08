@@ -11,7 +11,7 @@ py -3 -m venv "%~dp0.venv"
 if errorlevel 1 goto no_python
 
 :check_dependencies
-"%~dp0.venv\Scripts\python.exe" -c "import numpy, PIL, mss, soundcard, faster_whisper, av, requests, keyring, jwt, docx, reportlab, video_import" >nul 2>nul
+"%~dp0.venv\Scripts\python.exe" -c "import numpy, PIL, mss, soundcard, faster_whisper, av, requests, keyring, jwt, docx, reportlab, video_import, opencc, transcription" >nul 2>nul
 if errorlevel 1 goto install_dependencies
 goto launch_app
 
