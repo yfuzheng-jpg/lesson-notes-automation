@@ -1,0 +1,11 @@
+numpy
+Pillow
+mss
+soundcard
+faster-whisper
+av>=11
+requests
+keyring
+PyJWT[crypto]
+python-docx
+reportlab

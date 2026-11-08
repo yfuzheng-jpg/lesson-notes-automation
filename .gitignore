@@ -1,0 +1,18 @@
+# Local Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+settings.json
+siwc-credentials.bin
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
