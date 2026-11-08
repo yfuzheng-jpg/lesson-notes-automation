@@ -1,5 +1,15 @@
 # 课堂笔记自动整理
 
+## 项目简介 / Project Overview
+
+**中文**
+
+课堂笔记自动整理是一款面向 Windows 的 AI 辅助笔记工具，可将本地课程视频或录课时采集的画面与系统音频整理为按知识主题组织的学习笔记。程序在本机转写讲解，并结合截图生成便于理解、复习与自测的内容。支持视频片段选择与画面框选、多种 AI 服务、生成检查点恢复，以及按本机时区或 GMT 固定时差设置 AI 提交时段；可导出 Word、PDF、LaTeX 和 Markdown。
+
+**English**
+
+Lesson Notes Automation is an AI-assisted note-taking tool for Windows that turns local lecture videos or captured screen visuals and system audio into topic-organized study notes. It transcribes speech locally and combines transcripts with screenshots to support understanding, review, and self-assessment. Features include video time-range and region selection, multiple AI providers, checkpoint-based generation recovery, and request scheduling using local time or fixed GMT offsets. Notes can be exported to Word, PDF, LaTeX, and Markdown.
+
 ## 2026-11-07 更新
 
 - 视频支持指定起始与终止时间，只用此时间段内的截图和音轨生成笔记；“仅转写”也可选择时间段。窗口标题带“视频片段版”。
