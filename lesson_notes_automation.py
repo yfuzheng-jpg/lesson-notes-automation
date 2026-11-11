@@ -22,11 +22,13 @@ from ai_schedule import (validate_window, next_allowed, next_retry, is_usage_lim
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, END, StringVar, Tk, filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Callable
+from diagnostics import export_report, record_failure
+from speech_engine import SpeechEngine, validate_existing_transcript
 from transcription import (TRANSCRIPTION_LANGUAGES, normalize_transcription_language,
                            transcription_options, create_simplifier)
 
 APP_NAME = "课堂笔记自动整理"
-APP_VERSION = "2026.11.08 · 视频片段版 · 中文简体转写修复"
+APP_VERSION = "2026.11.11 · 视频片段版 · 中文校验与故障诊断版"
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "LessonNotesAutomation"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 KEYRING_SERVICE = "LessonNotesAutomation"
@@ -978,6 +980,7 @@ class SessionController:
         self.importing = False
         self.source_metadata: dict = {}
         self.generating = False
+        self.failure_stage = None
         self.generation_not_before: datetime | None = None
         self.limit_retries = 0
         self.transcript_lock = threading.Lock()
@@ -1007,6 +1010,8 @@ class SessionController:
     def _write_manifest(self, state: str, error: str | None = None, output_path: Path | None = None) -> None:
         payload = {
             "version": 1,
+            "app_version": APP_VERSION,
+            "failure_stage": self.failure_stage,
             "state": state,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "note_name": self.settings.note_name,
@@ -1076,7 +1081,9 @@ class SessionController:
             issue = str(exc)
             state = "video_import_cancelled"
         except Exception as exc:
-            issue = f"视频导入失败：{exc}"
+            self.failure_stage = getattr(importer, "stage", "视频导入")
+            record_failure(self.session_dir, self.failure_stage, exc)
+            issue = f"{self.failure_stage}失败：{exc}"
             state = "video_import_failed"
         finally:
             self.source_metadata.update(importer.metadata)
@@ -1295,16 +1302,16 @@ class SessionController:
             from faster_whisper import WhisperModel
 
             self.on_status("正在加载本地 Whisper 语音模型；首次运行可能需要下载模型…")
-            options = transcription_options(self.settings.transcription_language)
-            simplify = create_simplifier()
             model = WhisperModel("base", device="cpu", compute_type="int8")
+            engine = SpeechEngine(model, self.settings.transcription_language,
+                                  self.session_dir / "transcription_diagnostics.json", self.on_status)
             self.on_status("本地语音模型已就绪，正在实时转写…")
             while True:
                 chunk = self.audio_queue.get()
                 if chunk is None:
                     break
-                segments, _ = model.transcribe(chunk, **options)
-                text = simplify("".join(segment.text for segment in segments).strip())
+                segments = engine.transcribe(chunk)
+                text = "".join(segment.text for segment in segments).strip()
                 if text:
                     stamp = datetime.now().strftime("[%H:%M:%S]")
                     with self.transcript_lock:
@@ -1316,6 +1323,7 @@ class SessionController:
                     else:
                         self.on_status(f"实时转写中：已写入 {len(self.transcript_parts)} 段原文")
         except Exception as exc:
+            record_failure(self.session_dir, "语音转写", exc)
             self.transcript_error = f"本地转写失败：{exc}"
             if self.recording:
                 self.stop_recording(self.transcript_error)
@@ -1426,9 +1434,14 @@ class SessionController:
         warning: str | None = None
         error: str | None = None
         proxy_manager: ProxyManager | None = None
+        stage = "素材检查"
+        self.failure_stage = None
         try:
             self._generation_pause_gate()
             transcript = self.transcript_path.read_text(encoding="utf-8").split("\n\n", 1)[-1].strip() if self.settings.material_mode != "仅截图" and self.transcript_path.exists() else ""
+            if self.settings.material_mode != "仅截图":
+                validate_existing_transcript(transcript, self.settings.transcription_language)
+            stage = "网络与代理检查"
             proxies = None
             if self.settings.use_clash and provider_needs_clash(self.settings.provider):
                 self.on_status("正在检查 Clash Verge，仅为课堂笔记请求使用代理…")
@@ -1461,6 +1474,7 @@ class SessionController:
                 [self.settings.provider, self.settings.base_url, self.settings.model, self.settings.reasoning_effort, self.settings.material_mode],
                 ensure_ascii=False,
             )
+            stage = "AI 整理"
             markdown = client.create_notes(
                 images,
                 transcript,
@@ -1473,6 +1487,7 @@ class SessionController:
                 self._generation_pause_gate,
                 self.settings.generation_mode,
             )
+            stage = "文档导出"
             output_path, warning = save_notes(
                 markdown,
                 self.settings.note_name,
@@ -1485,7 +1500,9 @@ class SessionController:
                 self.generation_cancelled = True
                 error = "已终止 AI 生成。已完成的截图组检查点仍然保留。"
             else:
-                error = str(exc)
+                self.failure_stage = stage
+                record_failure(self.session_dir, stage, exc)
+                error = f"{stage}失败：{exc}\n可点击‘导出故障信息…’反馈诊断报告，素材和已完成检查点已保留。"
         finally:
             if proxy_manager:
                 try:
@@ -1800,6 +1817,7 @@ class LessonNotesApp:
             state="disabled",
         )
         self.cancel_generation_button.pack(side="left", padx=(8, 0))
+        ttk.Button(generation_buttons, text="导出故障信息…", command=self._export_diagnostics).pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(buttons, text="结束录课", command=self._stop, state="disabled")
         self.stop_button.pack(side="left", padx=8)
         ttk.Button(buttons, text="保存设置", command=self._save_settings).pack(side="left")
@@ -3139,6 +3157,19 @@ class LessonNotesApp:
             self.stop_button.state(["disabled"])
             self.pause_button.state(["disabled"])
             self.session.stop_recording("用户手动结束课程")
+
+    def _export_diagnostics(self) -> None:
+        destination = filedialog.asksaveasfilename(title="保存故障诊断报告",
+            initialfile="课堂笔记故障诊断.json", defaultextension=".json",
+            filetypes=[("诊断报告", "*.json")])
+        if not destination:
+            return
+        try:
+            session = self.session.session_dir if self.session else self.pending_session_dir
+            export_report(destination, session)
+            self.status_var.set("故障信息已导出；报告不含密钥、令牌或课程正文。")
+        except Exception as exc:
+            messagebox.showerror("诊断报告保存失败", str(exc))
 
     def _close(self) -> None:
         if self.session and self.session.importing:

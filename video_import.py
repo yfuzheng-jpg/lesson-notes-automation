@@ -6,7 +6,7 @@ import math
 import threading
 from pathlib import Path
 from typing import Callable
-from transcription import transcription_options, create_simplifier
+from speech_engine import SpeechEngine
 
 
 class VideoImportCancelled(RuntimeError):
@@ -36,6 +36,7 @@ class VideoImporter:
         self.end_seconds = end_seconds
         self.frames: list[dict] = []
         self.metadata: dict = {}
+        self.stage = "视频检查"
 
     def gate(self) -> None:
         while self.pause.is_set():
@@ -112,16 +113,19 @@ class VideoImporter:
         if mode == "仅转写" and not self.metadata["has_audio"]:
             raise ValueError("此视频没有音轨，无法使用‘仅转写’；请选择‘仅截图’或‘转写＋截图’后重新导入。")
         try:
-            if mode != "仅转写":
-                self.extract_screenshots()
-                self.metadata["screenshots_complete"] = True
-            self.gate()
+            # Validate speech before spending time extracting every screenshot.
             if mode != "仅截图":
                 if self.metadata["has_audio"]:
+                    self.stage = "语音转写"
                     self.transcribe_audio()
                     self.metadata["transcript_complete"] = True
                 else:
                     self.metadata["warnings"].append("视频没有音轨，本次使用视频截图生成笔记。")
+            self.gate()
+            if mode != "仅转写":
+                self.stage = "视频截图提取"
+                self.extract_screenshots()
+                self.metadata["screenshots_complete"] = True
             self.gate()
             return self.metadata
         finally:
@@ -225,9 +229,9 @@ class VideoImporter:
             factory = WhisperModel
         else:
             factory = self.model_factory
-        options = transcription_options(getattr(self.settings, "transcription_language", "zh"))
-        simplify = create_simplifier()
         model = factory("base", device="cpu", compute_type="int8")
+        engine = SpeechEngine(model, getattr(self.settings, "transcription_language", "zh"),
+                              self.session_dir / "transcription_diagnostics.json", self.status, self.gate)
         self.gate()
         sample_rate = 16000
         chunk_samples = sample_rate * 30
@@ -244,11 +248,11 @@ class VideoImporter:
             self.progress("正在转写视频音轨", offset)
             if np.max(np.abs(samples)) < 1e-5:
                 return
-            segments, _ = model.transcribe(samples, **options)
+            segments = engine.transcribe(samples)
             lines = []
             for segment in segments:
                 self.gate()
-                text = simplify(segment.text.strip())
+                text = segment.text.strip()
                 if text:
                     first = max(self.start_seconds, offset, offset + segment.start)
                     last = min(offset + len(samples) / sample_rate, offset + segment.end)
