@@ -803,7 +803,7 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
 
     math_commands.update("AA aa textnormal textrm textsf texttt textit textbf textup emph mbox textsubscript textsuperscript mp".split())
 
-    math_commands.update("hline cline rightleftarrows leftrightarrows rightleftharpoons leftrightharpoons".split())
+    math_commands.update("hline cline rightleftarrows leftrightarrows rightleftharpoons leftrightharpoons Downarrow Uparrow Updownarrow".split())
 
     math_commands.update("kappa varsigma digamma hslash angle measuredangle sphericalangle xrightarrow xleftarrow Rightarrow Leftarrow Leftrightarrow Longrightarrow Longleftarrow mapsto longmapsto hookrightarrow hookleftarrow uparrow downarrow updownarrow nearrow searrow nwarrow swarrow lceil rceil lfloor rfloor lVert rVert not ni supset supseteq nsubseteq nsupseteq land lor neg wedge vee bigcup bigcap bigoplus bigotimes coprod oint iiiint iiint vdots ddots cdotp bullet star circledast circledcirc circleddash cong asymp prec succ preceq succeq triangleq doteq leqq geqq lesssim gtrsim lessapprox gtrapprox varnothing mathsf mathtt mathfrak mathnormal big Big bigg Bigg bigl bigr Bigl Bigr biggl biggr Biggl Biggr bigm Bigm biggm Biggm textstyle scriptstyle scriptscriptstyle limits nolimits nonumber notag vphantom hphantom phantom arg deg dim hom inf sup ker lg cot sec csc coth arctan check breve acute grave mathstrut ensuremath".split())
 
