@@ -6,6 +6,58 @@ import re
 from pathlib import Path
 
 
+def _dialog_work_area(parent):
+    """Return the usable area on the parent's monitor, excluding the taskbar."""
+    fallback = (0, 0, parent.winfo_screenwidth(), parent.winfo_screenheight())
+    try:
+        import ctypes
+        from ctypes import wintypes
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [('size', wintypes.DWORD), ('monitor', wintypes.RECT),
+                        ('work', wintypes.RECT), ('flags', wintypes.DWORD)]
+        user32 = ctypes.windll.user32
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.MonitorFromWindow.restype = wintypes.HANDLE
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        info = MonitorInfo(size=ctypes.sizeof(MonitorInfo))
+        monitor = user32.MonitorFromWindow(parent.winfo_id(), 2)
+        if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            work = info.work
+            return work.left, work.top, work.right, work.bottom
+    except (AttributeError, OSError, ValueError):
+        pass
+    return fallback
+
+
+def _scrollable_dialog(dialog, parent, width=960, height=640):
+    """Reserve a fixed action bar before laying out scrollable modal content."""
+    from tkinter import Canvas, ttk
+    left, top, right, bottom = _dialog_work_area(parent)
+    available_width = max(240, right - left - 32)
+    available_height = max(200, bottom - top - 60)
+    width, height = min(width, available_width), min(height, available_height)
+    dialog.geometry(f'{width}x{height}+{left + (right - left - width) // 2}+{top + (bottom - top - height) // 2}')
+    dialog.minsize(min(480, width), min(300, height))
+    dialog.resizable(True, True)
+    dialog.columnconfigure(0, weight=1)
+    dialog.rowconfigure(0, weight=1)
+    # A sibling window can be embedded in a canvas whose parent is its ancestor.
+    # Creating this frame first also preserves existing preview-canvas discovery.
+    body = ttk.Frame(dialog, padding=12)
+    viewport = Canvas(dialog, name='dialog_viewport', highlightthickness=0, borderwidth=0)
+    viewport.grid(row=0, column=0, sticky='nsew')
+    scrollbar = ttk.Scrollbar(dialog, orient='vertical', command=viewport.yview)
+    scrollbar.grid(row=0, column=1, sticky='ns')
+    viewport.configure(yscrollcommand=scrollbar.set)
+    window = viewport.create_window(0, 0, window=body, anchor='nw')
+    body.bind('<Configure>', lambda _: viewport.configure(scrollregion=viewport.bbox('all')))
+    viewport.bind('<Configure>', lambda event: viewport.itemconfigure(window, width=max(1, event.width)))
+    footer = ttk.Frame(dialog, name='dialog_footer', padding=(12, 8))
+    footer.grid(row=1, column=0, columnspan=2, sticky='ew')
+    dialog.bind('<MouseWheel>', lambda event: viewport.yview_scroll(-int(event.delta / 120), 'units'), add='+')
+    return body, footer, (width, height)
+
+
 def parse_video_time(value: str) -> float:
     """Accept seconds, MM:SS, or HH:MM:SS (including fractional seconds)."""
     value = value.strip()
@@ -75,26 +127,26 @@ def read_preview(source: Path, seconds: float = 0):
         return last.to_image(), duration
 
 
-def select_video_region(parent, source: Path, screenshots: bool = True) -> dict | None:
+def select_video_region(parent, source: Path, screenshots: bool = True,
+                        initial_selection: dict | None = None) -> dict | None:
     from tkinter import Canvas, StringVar, Toplevel, messagebox, ttk
     from PIL import ImageTk
 
     # Decode before creating the window so failure cannot leave a stranded modal.
     image, duration = read_preview(source)
     frame_size = image.size
+    initial_selection = initial_selection or {}
     dialog = Toplevel(parent)
     dialog.title("视频导入 — 时间范围与截图区域")
     dialog.transient(parent)
-    dialog.resizable(False, False)
-    body = ttk.Frame(dialog, padding=12)
-    body.pack(fill="both", expand=True)
-    ttk.Label(body, text=source.name, wraplength=850).pack(anchor="w")
+    body, buttons, bounds = _scrollable_dialog(dialog, parent, 1000, 740)
+    wrap = max(180, bounds[0] - 60)
+    ttk.Label(body, text=source.name, wraplength=wrap).pack(anchor="w")
     ttk.Label(body, text=("设置起止时间，并拖动鼠标框选截图区域。截图和转写仅处理所选时间段；转写包含该时段的完整音轨。"
                          if screenshots else "设置需要转写的起始和终止时间；只处理所选时间段的音轨。"),
-              wraplength=850).pack(anchor="w", pady=(4, 8))
+              wraplength=wrap).pack(anchor="w", pady=(4, 8))
     display = image.copy()
-    display.thumbnail((min(960, parent.winfo_screenwidth() - 100),
-                       min(500, max(120, parent.winfo_screenheight() - 420))))
+    display.thumbnail((max(120, bounds[0] - 60), min(420, max(100, bounds[1] - 310))))
     dw, dh = display.size
     canvas = Canvas(body, width=dw, height=dh, highlightthickness=0, cursor="crosshair", background="#222")
     canvas.pack()
@@ -105,16 +157,19 @@ def select_video_region(parent, source: Path, screenshots: bool = True) -> dict 
     region = None
     result = None
     status = StringVar(master=dialog, value=f"原视频 {frame_size[0]}×{frame_size[1]}；当前使用完整画面。")
-    ttk.Label(body, textvariable=status).pack(anchor="w", pady=6)
+    ttk.Label(body, textvariable=status, wraplength=wrap).pack(anchor="w", pady=6)
     range_row = ttk.Frame(body)
     range_row.pack(fill="x", pady=(2, 6))
-    range_start = StringVar(master=dialog, value="00:00:00")
-    range_end = StringVar(master=dialog, value="")
-    ttk.Label(range_row, text="起始时间").pack(side="left")
-    ttk.Entry(range_row, name="range_start", textvariable=range_start, width=14).pack(side="left", padx=6)
-    ttk.Label(range_row, text="终止时间").pack(side="left")
-    ttk.Entry(range_row, name="range_end", textvariable=range_end, width=14).pack(side="left", padx=6)
-    ttk.Label(range_row, text="留空至视频结束；秒数 / MM:SS / HH:MM:SS", foreground="#666").pack(side="left")
+    range_start = StringVar(master=dialog, value=f"{initial_selection.get('start_seconds', 0):g}")
+    initial_end = initial_selection.get("end_seconds")
+    range_end = StringVar(master=dialog, value=f"{initial_end:g}" if initial_end is not None else "")
+    range_row.columnconfigure(1, weight=1)
+    range_row.columnconfigure(3, weight=1)
+    ttk.Label(range_row, text="起始时间").grid(row=0, column=0, sticky='w')
+    ttk.Entry(range_row, name="range_start", textvariable=range_start, width=12).grid(row=0, column=1, sticky='ew', padx=6)
+    ttk.Label(range_row, text="终止时间").grid(row=0, column=2, sticky='w')
+    ttk.Entry(range_row, name="range_end", textvariable=range_end, width=12).grid(row=0, column=3, sticky='ew', padx=6)
+    ttk.Label(range_row, text="终止留空至视频结束；支持秒数 / MM:SS / HH:MM:SS", foreground="#666", wraplength=wrap).grid(row=1, column=0, columnspan=4, sticky='w', pady=(4, 0))
 
     def reset():
         nonlocal rectangle, region, start
@@ -167,7 +222,7 @@ def select_video_region(parent, source: Path, screenshots: bool = True) -> dict 
 
     seek_row = ttk.Frame(body)
     seek_row.pack(fill="x", pady=(2, 8))
-    ttk.Label(seek_row, text="预览时间（秒或 HH:MM:SS）").pack(side="left")
+    ttk.Label(seek_row, text="预览时间").pack(side="left")
     position = StringVar(master=dialog, value="0")
     ttk.Entry(seek_row, textvariable=position, width=13).pack(side="left", padx=6)
 
@@ -189,21 +244,30 @@ def select_video_region(parent, source: Path, screenshots: bool = True) -> dict 
     ttk.Button(seek_row, text="查看此帧", command=seek).pack(side="left")
     if duration:
         ttk.Label(seek_row, text=f"  视频时长约 {duration:.1f} 秒").pack(side="left")
-    buttons = ttk.Frame(body)
-    buttons.pack(fill="x")
+    buttons.columnconfigure(0, weight=1, uniform='actions')
+    buttons.columnconfigure(1, weight=1, uniform='actions')
     confirm = ttk.Button(buttons, text="使用框选区域并导入", command=accept, state="disabled")
     if screenshots:
-        confirm.pack(side="left")
-    ttk.Button(buttons, text="使用完整画面并导入" if screenshots else "导入此时间段",
-               command=lambda: accept(True)).pack(side="left", padx=6)
+        confirm.grid(row=0, column=0, sticky='ew', padx=(0, 4), pady=(0, 4))
+    full = ttk.Button(buttons, text="使用完整画面并导入" if screenshots else "导入此时间段",
+                      command=lambda: accept(True))
+    full.grid(row=0, column=1 if screenshots else 0, sticky='ew', padx=(4, 0) if screenshots else (0, 4), pady=(0, 4))
     if screenshots:
-        ttk.Button(buttons, text="重新框选", command=reset).pack(side="left")
-    ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="重新框选", command=reset).grid(row=1, column=0, sticky='ew', padx=(0, 4))
+    ttk.Button(buttons, text="取消", command=dialog.destroy).grid(row=1 if screenshots else 0, column=1, sticky='ew', padx=(4, 0))
     if screenshots:
         canvas.bind("<ButtonPress-1>", begin)
         canvas.bind("<B1-Motion>", drag)
         canvas.bind("<ButtonRelease-1>", finish)
+        if initial_selection.get("capture_region"):
+            region = validate_region(initial_selection["capture_region"], frame_size)
+            x, y, width, height = region
+            rectangle = canvas.create_rectangle(x * dw / frame_size[0], y * dh / frame_size[1],
+                (x + width) * dw / frame_size[0], (y + height) * dh / frame_size[1], outline="#00e893", width=3)
+            confirm.state(["!disabled"])
+            status.set(f"已选视频区域：x={x}, y={y}, {width}×{height} 像素")
     dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    dialog.bind("<Return>", lambda _event: accept(region is None or not screenshots))
     dialog.grab_set()
     parent.wait_window(dialog)
     return result

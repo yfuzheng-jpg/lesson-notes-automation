@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Callable
 from speech_engine import SpeechEngine
 
+from screenshot_filter import (DEFAULT_DIFFERENCE_PERCENT, STABLE_DIFFERENCE_PERCENT,
+                               difference_percent, is_distinct, screenshot_fingerprint,
+                               validate_difference_percent)
+
 
 class VideoImportCancelled(RuntimeError):
     pass
@@ -81,6 +85,9 @@ class VideoImporter:
                 "frame_size": [video.width, video.height],
                 "has_audio": bool(container.streams.audio), "warnings": [],
                 "screenshots_complete": False, "transcript_complete": False,
+                "screenshot_difference_percent": validate_difference_percent(getattr(
+                    self.settings, "screenshot_difference_percent", DEFAULT_DIFFERENCE_PERCENT)),
+                "skip_duplicate_screenshots": self.settings.skip_duplicate_screenshots,
             }
         return self.metadata
 
@@ -139,7 +146,6 @@ class VideoImporter:
 
     def extract_screenshots(self) -> None:
         import av
-        import numpy as np
 
         images_dir = self.session_dir / "screenshots"
         images_dir.mkdir(parents=True, exist_ok=True)
@@ -148,14 +154,21 @@ class VideoImporter:
         last_report = -10.0
         sample_step = 0.5 if self.settings.capture_mode == "画面变化时" else max(
             1, int(self.settings.capture_interval_seconds))
+        threshold = self.metadata["screenshot_difference_percent"]
+        filtering = self.settings.capture_mode != "定时截图" or self.settings.skip_duplicate_screenshots
 
-        def difference(left, right):
-            return float(np.mean(np.abs(left - right)))
-
-        def save(image, seconds):
+        def save(image, seconds, fingerprint):
+            nonlocal reference
+            # Recheck the exact image being saved, including the EOF candidate.
+            # Skipped samples never become the reference, so small edits accumulate.
+            if filtering and not is_distinct(fingerprint, reference, threshold):
+                return
+            score = difference_percent(fingerprint, reference) if reference is not None else None
             name = f"frame_{len(self.frames) + 1:06d}_{round(seconds * 1000):010d}ms.png"
             image.save(images_dir / name)
-            self.frames.append({"file": name, "seconds": round(seconds, 3), "timestamp": timestamp(seconds)})
+            self.frames.append({"file": name, "seconds": round(seconds, 3), "timestamp": timestamp(seconds),
+                                "difference_percent": round(score, 3) if score is not None else None})
+            reference = fingerprint.copy()
             if len(self.frames) % 25 == 0:
                 self.save_frame_index()
 
@@ -185,26 +198,23 @@ class VideoImporter:
                     x, y, width, height = self.capture_region
                     image = image.crop((x, y, x + width, y + height))
                 image.thumbnail((1920, 1080))
-                thumbnail = np.asarray(image.convert("L").resize((160, 90)), dtype=np.int16)
-                changed = reference is None or difference(thumbnail, reference) >= 3.5
+                thumbnail = screenshot_fingerprint(image)
+                changed = is_distinct(thumbnail, reference, threshold)
                 if self.settings.capture_mode == "定时截图":
                     if seconds + 0.0001 >= next_interval:
                         if not (self.settings.skip_duplicate_screenshots and not changed):
-                            save(image, seconds)
-                            reference = thumbnail.copy()
+                            save(image, seconds, thumbnail)
                         next_interval = seconds + sample_step
                 elif reference is None:
-                    save(image, seconds)
-                    reference = thumbnail.copy()
+                    save(image, seconds, thumbnail)
                 elif changed:
-                    if candidate is None or difference(thumbnail, candidate) >= 1.4:
+                    if candidate is None or difference_percent(thumbnail, candidate) >= STABLE_DIFFERENCE_PERCENT:
                         candidate = thumbnail.copy()
                         candidate_since = seconds
                     candidate_image = image
                     candidate_time = seconds
                     if seconds - candidate_since >= 0.9:
-                        save(candidate_image, candidate_time)
-                        reference = candidate.copy()
+                        save(candidate_image, candidate_time, thumbnail)
                         candidate = candidate_image = None
                 else:
                     candidate = candidate_image = None
@@ -213,7 +223,7 @@ class VideoImporter:
                     last_report = seconds
             # Preserve a changed final page even when EOF arrives before its stability delay.
             if candidate_image is not None:
-                save(candidate_image, candidate_time)
+                save(candidate_image, candidate_time, screenshot_fingerprint(candidate_image))
         if not self.frames:
             raise ValueError("所选时间段内未能读取任何视频画面，请检查起止时间或视频文件。")
         self.save_frame_index()

@@ -22,13 +22,18 @@ from ai_schedule import (validate_window, next_allowed, next_retry, is_usage_lim
 from pathlib import Path
 from tkinter import BooleanVar, Canvas, END, StringVar, Tk, filedialog, font as tkfont, messagebox, simpledialog, ttk
 from typing import Callable
+from dataclasses import replace
+from window_restore import restore_app_window
 from diagnostics import export_report, record_failure
 from speech_engine import SpeechEngine, validate_existing_transcript
 from transcription import (TRANSCRIPTION_LANGUAGES, normalize_transcription_language,
                            transcription_options, create_simplifier)
+from screenshot_filter import (DEFAULT_DIFFERENCE_PERCENT, STABLE_DIFFERENCE_PERCENT,
+                               difference_percent, is_distinct, screenshot_fingerprint,
+                               validate_difference_percent)
 
 APP_NAME = "课堂笔记自动整理"
-APP_VERSION = "2026.11.11 · 视频片段版 · 中文校验与故障诊断版"
+APP_VERSION = "2026.11.12 · 独立截图转写与窗口修复版"
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "LessonNotesAutomation"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 KEYRING_SERVICE = "LessonNotesAutomation"
@@ -64,6 +69,7 @@ class Settings:
     capture_mode: str = "画面变化时"
     capture_interval_seconds: int = 5
     skip_duplicate_screenshots: bool = True
+    screenshot_difference_percent: float = DEFAULT_DIFFERENCE_PERCENT
     idle_seconds: int = 45
     clash_path: str = ""
     clash_port: int = 7897
@@ -760,6 +766,8 @@ def _plain_inline(value: str) -> str:
 def _markdown_to_latex(markdown: str, title: str) -> str:
     math_commands = set("alpha beta gamma delta epsilon varepsilon theta lambda mu nu pi rho sigma tau phi varphi chi psi omega Gamma Delta Theta Lambda Pi Sigma Phi Psi Omega frac dfrac tfrac sqrt sum prod int iint lim sin cos tan log ln exp min max infty partial times cdot pm le ge leq geq ne neq approx equiv to rightarrow leftarrow in notin subset subseteq forall exists mathbb mathbf mathrm mathit text left right begin end underbrace overbrace overline hat vec bar quad qquad displaystyle operatorname binom dots ldots cdots".split())
 
+    math_commands.update("hbar nabla ell varrho vartheta propto sim simeq ll gg perp parallel langle rangle lvert rvert vert Vert boldsymbol mathcal dot ddot tilde widetilde widehat Im Re dagger ast otimes oplus sinh cosh tanh arcsin arccos arctan substack overset underset boxed".split())
+
     def safe_math(value: str) -> bool:
         commands = set(re.findall(r"\\([A-Za-z]+)", value))
         environments = re.findall(r"\\(?:begin|end)\s*\{([^}]+)\}", value)
@@ -1020,6 +1028,8 @@ class SessionController:
             "transcript_script": "Hans",
             "capture_mode": self.settings.capture_mode,
             "capture_interval_seconds": self.settings.capture_interval_seconds,
+            "skip_duplicate_screenshots": self.settings.skip_duplicate_screenshots,
+            "screenshot_difference_percent": self.settings.screenshot_difference_percent,
             "monitor_index": self.settings.monitor_index,
             "capture_region_only": self.settings.capture_region_only,
             "capture_region": self.settings.capture_region,
@@ -1186,19 +1196,16 @@ class SessionController:
                     if x < 0 or y < 0 or width < 80 or height < 60 or x + width > monitor["width"] or y + height > monitor["height"]:
                         raise RuntimeError("保存的 PPT 区域超出显示器范围，请重新框选。")
 
-                def difference(left, right) -> float:
-                    return float(np.mean(np.abs(left - right)))
-
                 reference: np.ndarray | None = None
                 candidate: np.ndarray | None = None
                 candidate_image = None
                 candidate_since = 0.0
                 interval_due = 0.0
-                threshold = 3.5
-                stable_threshold = 1.4
+                threshold = validate_difference_percent(self.settings.screenshot_difference_percent)
                 while not self.stop_event.is_set():
                     if self.pause_event.is_set():
                         candidate = None
+                        candidate_image = None
                         time.sleep(0.2)
                         continue
                     shot = screen.grab(monitor)
@@ -1206,15 +1213,16 @@ class SessionController:
                     if selected_region:
                         x, y, width, height = selected_region
                         image = image.crop((x, y, x + width, y + height))
-                    thumbnail = np.asarray(image.convert("L").resize((160, 90)), dtype=np.int16)
+                    thumbnail = screenshot_fingerprint(image)
                     now = time.time()
-                    changed = reference is None or difference(thumbnail, reference) >= threshold
-                    if changed and reference is not None:
+                    changed = is_distinct(thumbnail, reference, threshold)
+                    # Activity detection stays sensitive even with aggressive filtering.
+                    if reference is not None and difference_percent(thumbnail, reference) >= 1:
                         self.last_activity = now
 
                     if self.settings.capture_mode == "定时截图":
                         if now >= interval_due:
-                            duplicate = reference is not None and difference(thumbnail, reference) < threshold
+                            duplicate = not changed
                             if not (self.settings.skip_duplicate_screenshots and duplicate):
                                 self._save_screenshot(image, thumbnail)
                                 reference = thumbnail.copy()
@@ -1223,15 +1231,15 @@ class SessionController:
                         self._save_screenshot(image, thumbnail)
                         reference = thumbnail.copy()
                     elif changed:
-                        if candidate is None or difference(thumbnail, candidate) >= stable_threshold:
+                        if candidate is None or difference_percent(thumbnail, candidate) >= STABLE_DIFFERENCE_PERCENT:
                             candidate = thumbnail.copy()
                             candidate_image = image.copy()
                             candidate_since = now
                         else:
                             candidate_image = image.copy()
-                        if now - candidate_since >= 0.9 and candidate_image is not None:
-                            self._save_screenshot(candidate_image, candidate)
-                            reference = candidate.copy()
+                        if now - candidate_since >= 0.9 and candidate_image is not None and changed:
+                            self._save_screenshot(candidate_image, thumbnail)
+                            reference = thumbnail.copy()
                             candidate = None
                             candidate_image = None
                     elif candidate is not None:
@@ -1546,6 +1554,8 @@ class LessonNotesApp:
         self.api_key = ""
         self.close_after_finish = False
         self.generate_after_video_import = False
+        self.batch = None
+        self.ui_events = queue.Queue()
         self._model_display_to_slug: dict[str, str] = {}
         self._connection_display_to_id: dict[str, str] = {}
         self._auth_busy = False
@@ -1555,6 +1565,27 @@ class LessonNotesApp:
         self._build_ui()
         self._load_variables()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self.root.after(40, self._drain_ui_events)
+
+    def _post_to_ui(self, callback) -> None:
+        self.ui_events.put(callback)
+
+    def _drain_ui_events(self) -> None:
+        for _ in range(100):
+            try:
+                callback = self.ui_events.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback()
+            except Exception:
+                import sys
+                self.root.report_callback_exception(*sys.exc_info())
+        if self.root.winfo_exists():
+            self.root.after(40, self._drain_ui_events)
+
+    def _restore_main_window(self) -> None:
+        restore_app_window(self.root)
 
     @staticmethod
     def _load_settings() -> Settings:
@@ -1617,6 +1648,7 @@ class LessonNotesApp:
         self.idle_var = StringVar()
         self.capture_mode_var = StringVar()
         self.capture_interval_var = StringVar()
+        self.screenshot_difference_var = StringVar()
         self.capture_region_only_var = BooleanVar(value=True)
         self.skip_duplicates_var = BooleanVar(value=True)
         self.capture_region: list[int] | None = None
@@ -1753,7 +1785,15 @@ class LessonNotesApp:
         self.interval_spin.pack(side="left", padx=(8, 4))
         ttk.Label(capture_line, text="秒").pack(side="left")
         label_row(16, "截图方式", capture_line)
-        ttk.Checkbutton(form, text="定时模式跳过重复画面", variable=self.skip_duplicates_var).grid(row=17, column=1, sticky="w", pady=(0, 4))
+        filter_line = ttk.Frame(form)
+        filter_line.grid(row=17, column=1, sticky="ew", pady=(0, 4))
+        ttk.Label(filter_line, text="与上一张保留图差异不足").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(filter_line, name="difference_percent", textvariable=self.screenshot_difference_var,
+                    from_=0, to=100, increment=1, width=6).grid(row=0, column=1, padx=5)
+        ttk.Label(filter_line, text="% 则跳过").grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(filter_line, text="定时模式也过滤", variable=self.skip_duplicates_var).grid(row=0, column=3, padx=(12, 0))
+        ttk.Label(filter_line, text="默认 15%；越大截图越少，0 表示关闭。按选区内有效变化面积估算，忽略轻微噪点。",
+                  foreground="#666", wraplength=660).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
         label_row(18, "静止自动暂停秒数", ttk.Spinbox(form, textvariable=self.idle_var, from_=10, to=600, increment=5, width=10))
 
         clash_line = ttk.Frame(form)
@@ -1792,7 +1832,7 @@ class LessonNotesApp:
         ttk.Label(outer, text=note, wraplength=730, foreground="#555").pack(anchor="w", pady=(7, 10))
         buttons = ttk.Frame(outer)
         buttons.pack(fill="x")
-        self.start_button = ttk.Button(buttons, text="保存设置并开始", command=self._start)
+        self.start_button = ttk.Button(buttons, text="开始录课 / 采集素材", command=self._start)
         self.start_button.pack(side="left")
         self.pause_button = ttk.Button(buttons, text="暂停录课", command=self._toggle_pause, state="disabled")
         self.pause_button.pack(side="left", padx=(8, 0))
@@ -1800,7 +1840,20 @@ class LessonNotesApp:
         video_line.pack(fill="x", pady=(7, 0))
         self.video_button = ttk.Button(video_line, text="导入视频并生成…", command=self._import_video_file)
         self.video_button.pack(side="left")
-        ttk.Label(video_line, text="选择文件后可设置起止时间、预览并框选视频区域。", foreground="#555").pack(side="left", padx=(8, 0))
+        self.batch_video_button = ttk.Button(video_line, text="批量导入视频…", command=self._import_video_batch)
+        self.batch_video_button.pack(side="left", padx=(8, 0))
+        self.batch_cancel_button = ttk.Button(video_line, text="停止整批处理", command=self._cancel_video_batch, state="disabled")
+        self.batch_cancel_button.pack(side="left", padx=(8, 0))
+        ttk.Label(video_line, text="可多选文件；时间段和选区可逐个设置。", foreground="#555").pack(side="left", padx=(8, 0))
+        materials_line = ttk.Frame(outer)
+        materials_line.pack(fill="x", pady=(6, 0))
+        self.screenshots_video_button = ttk.Button(materials_line, text="视频仅保存截图…",
+            command=lambda: self._import_video_file(material_only="仅截图"))
+        self.screenshots_video_button.pack(side="left")
+        self.transcript_video_button = ttk.Button(materials_line, text="视频仅转写音频…",
+            command=lambda: self._import_video_file(material_only="仅转写"))
+        self.transcript_video_button.pack(side="left", padx=(8, 0))
+        ttk.Label(materials_line, text="只保存本地素材，无需 AI 账号，不生成笔记。", foreground="#555").pack(side="left", padx=8)
         generation_buttons = ttk.Frame(outer)
         generation_buttons.pack(fill="x", pady=(7, 0))
         self.generation_pause_button = ttk.Button(
@@ -1856,6 +1909,7 @@ class LessonNotesApp:
         button_line.pack(anchor="w")
         self.recording_control_pause_button = ttk.Button(button_line, text="暂停录课", command=self._toggle_pause)
         self.recording_control_pause_button.pack(side="left")
+        ttk.Button(button_line, text="显示主窗口", command=self._restore_main_window).pack(side="left", padx=(8, 0))
         ttk.Button(button_line, text="结束录课", command=self._stop).pack(side="left", padx=(8, 0))
         self.recording_control_window = controls
         controls.protocol("WM_DELETE_WINDOW", self._hide_recording_controls)
@@ -1937,6 +1991,7 @@ class LessonNotesApp:
         self.idle_var.set(str(self.settings.idle_seconds))
         self.capture_mode_var.set(self.settings.capture_mode if self.settings.capture_mode in {"画面变化时", "定时截图"} else "画面变化时")
         self.capture_interval_var.set(str(self.settings.capture_interval_seconds))
+        self.screenshot_difference_var.set(f"{self.settings.screenshot_difference_percent:g}")
         self.capture_region_only_var.set(self.settings.capture_region_only)
         self.skip_duplicates_var.set(self.settings.skip_duplicate_screenshots)
         self.capture_region = list(self.settings.capture_region) if self.settings.capture_region else None
@@ -2054,6 +2109,10 @@ class LessonNotesApp:
 
     def _chatgpt_change_allowed(self) -> bool:
         if self._auth_busy:
+            return False
+        if self._batch_active():
+            self._set_saved_chatgpt_status()
+            messagebox.showinfo("批量处理进行中", "请先停止整批处理，再更换 ChatGPT 连接。")
             return False
         if self.session and self.session.generating:
             self._set_saved_chatgpt_status()
@@ -2298,6 +2357,8 @@ class LessonNotesApp:
             return {}
 
     def _refresh_recoverable_session(self) -> None:
+        if self._batch_active():
+            return
         if self.session and (self.session.recording or self.session.importing or self.session.generating):
             return
         folder = Path(self.folder_var.get().strip()) if self.folder_var.get().strip() else None
@@ -2331,6 +2392,9 @@ class LessonNotesApp:
                 self.resume_button.state(["disabled"])
 
     def _choose_recovery_session(self) -> None:
+        if self._batch_active():
+            messagebox.showinfo("批量处理进行中", "请先停止整批处理，再选择其他记录。")
+            return
         if self.session and (self.session.recording or self.session.importing or self.session.generating):
             messagebox.showinfo("任务进行中", "请先结束当前任务，再选择其他记录。")
             return
@@ -2360,16 +2424,23 @@ class LessonNotesApp:
         if status.startswith("video_import"):
             self.status_var.set("视频导入尚未完成；可检查现有素材后生成，完整处理请重新导入原视频。")
 
-    def _import_video_file(self) -> None:
+    def _import_video_file(self, material_only: str | None = None) -> None:
+        if self._batch_active():
+            messagebox.showinfo("批量处理进行中", "请等待整批处理完成，或停止整批处理。")
+            return
         if self.session and (self.session.recording or self.session.importing or self.session.generating):
             messagebox.showinfo("任务进行中", "请先结束当前任务，再导入视频。")
             return
         source = filedialog.askopenfilename(
-            title="选择要生成笔记的视频文件",
+            title="选择只提取素材的视频" if material_only else "选择要生成笔记的视频文件",
             filetypes=[("视频文件", "*.mp4 *.mkv *.mov *.avi *.wmv *.webm *.m4v *.ts *.mts *.m2ts *.flv *.mpg *.mpeg"),
                        ("所有文件", "*.*")],
         )
-        if not source or not self._save_settings():
+        if not source:
+            return
+        if material_only:
+            self.material_mode_var.set(material_only)
+        if not self._save_settings(require_ai=material_only is None):
             return
         modules = ["av", "numpy", "PIL", "video_import"]
         if self.settings.material_mode != "仅截图":
@@ -2389,22 +2460,155 @@ class LessonNotesApp:
                 self.settings, self.api_key, self._status_from_thread,
                 self._capture_finished_from_thread, self._generation_finished_from_thread,
             )
-            self.generate_after_video_import = True
+            self.generate_after_video_import = material_only is None
             self.session.import_video(Path(source), selection)
             self.pending_session_dir = self.session.session_dir
             self.start_button.state(["disabled"])
-            self.video_button.state(["disabled"])
+            self._video_buttons_state(["disabled"])
             self.generate_button.state(["disabled"])
             self.resume_button.state(["disabled"])
             self.stop_button.configure(text="取消视频导入")
             self.stop_button.state(["!disabled"])
             self.pause_button.configure(text="暂停导入")
             self.pause_button.state(["!disabled"])
-            self.status_var.set("正在导入视频；素材准备完成后进入截图检查和笔记生成流程。")
+            self.status_var.set("正在提取本地素材，完成后直接保存，不生成笔记。" if material_only else "正在导入视频；素材准备完成后进入截图检查和笔记生成流程。")
             self.log.configure(text=f"视频：{source}\n素材目录：{self.session.session_dir}")
         except Exception as exc:
             self.generate_after_video_import = False
             messagebox.showerror("无法导入视频", str(exc))
+
+    def _batch_active(self) -> bool:
+        return self.batch is not None and self.batch.running
+
+    def _video_buttons_state(self, state) -> None:
+        self.video_button.state(state)
+        self.batch_video_button.state(state)
+        self.screenshots_video_button.state(state)
+        self.transcript_video_button.state(state)
+
+    def _import_video_batch(self) -> None:
+        if self._batch_active() or (self.session and (
+                self.session.recording or self.session.importing or self.session.generating)):
+            messagebox.showinfo("任务进行中", "请先结束当前任务，再批量导入视频。")
+            return
+        from video_batch import VIDEO_FILETYPES, VideoBatch, select_video_batch
+
+        sources = filedialog.askopenfilenames(title="选择多个视频（可按 Ctrl / Shift 多选）", filetypes=VIDEO_FILETYPES)
+        if not sources:
+            return
+        options = select_video_batch(self.root, sources, screenshots=self.material_mode_var.get() != "仅转写",
+                                     default_material_mode=self.material_mode_var.get())
+        if options is None:
+            return
+        self.material_mode_var.set(options.get("material_mode", self.material_mode_var.get()))
+        if not self._save_settings(require_ai=options["generate"]):
+            return
+        self._begin_video_batch(options)
+
+    def _begin_video_batch(self, options) -> None:
+        from video_batch import VideoBatch
+        modules = ["av", "numpy", "PIL", "video_import", "screenshot_filter"]
+        if self.settings.material_mode != "仅截图":
+            modules.extend(["faster_whisper", "opencc"])
+        missing = [name for name in modules if importlib.util.find_spec(name) is None]
+        if missing:
+            messagebox.showerror("缺少依赖", "请双击启动器安装依赖后重试：\n" + ", ".join(missing))
+            return
+        self.batch = VideoBatch(
+            options["jobs"], self.settings, self.api_key, SessionController,
+            self._post_to_ui, self._batch_updated, self._batch_finished,
+            generate=options["generate"], review=self._review_screenshots if options["review"] else None,
+        )
+        self.start_button.state(["disabled"])
+        self._video_buttons_state(["disabled"])
+        self.generate_button.state(["disabled"])
+        self.resume_button.state(["disabled"])
+        self.batch_cancel_button.state(["!disabled"])
+        self.batch.start()
+
+    def start_screenshots_queue(self, plan_path) -> None:
+        from video_batch import VideoJob
+        plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+        jobs = [VideoJob(Path(item["source"]), selection=dict(item.get("selection", {}))) for item in plan["jobs"]]
+        if not jobs or any(not job.source.is_file() for job in jobs):
+            raise ValueError("截图队列为空或有原视频不存在，未启动处理。")
+        self.folder_var.set(plan["folder"])
+        self.material_mode_var.set("仅截图")
+        self.settings = self._collect_settings(require_ai=False)
+        self.settings = replace(self.settings, material_mode="仅截图")
+        self._begin_video_batch({"jobs": jobs, "generate": False, "review": False, "material_mode": "仅截图"})
+        self._restore_main_window()
+
+    def _batch_updated(self, batch) -> None:
+        if batch.current is not None:
+            self.session = batch.current
+            self.pending_session_dir = batch.current.session_dir
+        job = batch.jobs[batch.index] if batch.index >= 0 else batch.jobs[0]
+        self.status_var.set(f"批量 {max(1, batch.index + 1)}/{len(batch.jobs)} · {job.source.name} · {batch.message}")
+        self.log.configure(text="\n".join(
+            f"{index + 1}. {item.source.name} — {item.state}" for index, item in enumerate(batch.jobs))
+            + f"\n处理清单：{batch.report_path}"
+            + (f"\n{batch.report_error}" if batch.report_error else ""))
+        self.recovery_status_var.set(f"批量处理：{job.source.name}（{job.state}）")
+        self.stop_button.configure(text="停止整批处理")
+        self.stop_button.state(["disabled"] if batch.cancelled else ["!disabled"])
+        self.batch_cancel_button.state(["disabled"] if batch.cancelled else ["!disabled"])
+        importing = batch.current is not None and batch.current.importing
+        generating = batch.current is not None and batch.current.generating
+        paused = importing and batch.current.pause_event.is_set()
+        self.pause_button.configure(text="继续导入" if paused else "暂停导入")
+        self.pause_button.state(["!disabled"] if importing and not batch.cancelled else ["disabled"])
+        generation_paused = generating and batch.current.generation_pause_event.is_set()
+        self.generation_pause_button.configure(text="继续生成" if generation_paused else "暂停后续提交")
+        self.generation_pause_button.state(["!disabled"] if generating and not batch.cancelled else ["disabled"])
+        self.cancel_generation_button.configure(text="停止批量生成")
+        self.cancel_generation_button.state(["!disabled"] if generating and not batch.cancelled else ["disabled"])
+
+    def _batch_finished(self, batch) -> None:
+        self.root.deiconify()
+        self.start_button.state(["!disabled"])
+        self._video_buttons_state(["!disabled"])
+        self.batch_cancel_button.state(["disabled"])
+        self.stop_button.configure(text="结束录课")
+        self.stop_button.state(["disabled"])
+        self.pause_button.configure(text="暂停录课")
+        self.pause_button.state(["disabled"])
+        self.generation_pause_button.configure(text="暂停后续提交")
+        self.generation_pause_button.state(["disabled"])
+        self.cancel_generation_button.configure(text="终止 AI 生成")
+        self.cancel_generation_button.state(["disabled"])
+        saved = [job for job in batch.jobs if job.session_dir and job.session_dir.is_dir()]
+        if saved:
+            latest = saved[-1]
+            self.pending_session_dir = latest.session_dir
+            if self.session is not None and self.session.session_dir != latest.session_dir:
+                self.session = None
+            self.name_var.set(safe_name(latest.source.stem))
+            self.generate_button.state(["!disabled"])
+            self.recovery_status_var.set(f"当前记录：{latest.session_dir.name}（可选择已有记录重试其他视频）")
+        else:
+            self.session = None
+            self.generate_button.state(["disabled"])
+        complete = sum(job.state == "笔记已生成" for job in batch.jobs)
+        materials = sum(job.state == "素材已保存" for job in batch.jobs)
+        failed = sum(job.state in {"导入失败", "生成失败"} for job in batch.jobs)
+        summary = f"{'批量处理已停止' if batch.cancelled else '批量处理完成'}：笔记 {complete} 份，仅素材 {materials} 份，失败 {failed} 项。"
+        detail = summary + f"\n\n保存目录：{batch.settings.folder}\n处理清单：{batch.report_path}"
+        issues = [f"{job.source.name}：{job.issue}" for job in batch.jobs if job.issue]
+        if issues:
+            detail += "\n\n" + "\n".join(issues[:10])
+        if batch.report_error:
+            detail += f"\n\n{batch.report_error}"
+        self.status_var.set(summary)
+        self.log.configure(text=detail)
+        if self.close_after_finish:
+            self.root.destroy()
+        else:
+            messagebox.showinfo("批量处理结果", detail)
+
+    def _cancel_video_batch(self) -> None:
+        if self._batch_active():
+            self.batch.cancel()
 
     def _browse_folder(self) -> None:
         selected = filedialog.askdirectory(title="选择课堂素材和笔记目录", initialdir=self.folder_var.get() or None)
@@ -2439,7 +2643,7 @@ class LessonNotesApp:
                 "如果桌面上有快捷方式，请在文件选择器里切到桌面并选择该 .lnk 文件。",
             )
 
-    def _collect_settings(self) -> Settings:
+    def _collect_settings(self, require_ai: bool = True) -> Settings:
         provider = PROVIDERS.get(self.provider_var.get())
         if not provider:
             raise ValueError("请选择 AI 平台。")
@@ -2451,7 +2655,7 @@ class LessonNotesApp:
         reasoning_effort = self.reasoning_var.get().strip()
         if reasoning_effort == "默认（不指定）":
             reasoning_effort = ""
-        if provider == "chatgpt_oauth":
+        if provider == "chatgpt_oauth" and require_ai:
             import siwc_auth
 
             if self._auth_busy:
@@ -2463,22 +2667,23 @@ class LessonNotesApp:
                 raise ValueError("请先点击‘刷新模型’，再选择 ChatGPT 模型。")
             base_url = "https://api.openai.com/v1"
             api_key = ""
-        elif not base_url or not model or not api_key:
+        elif require_ai and (not base_url or not model or not api_key):
             raise ValueError("请填写 API 地址、模型名称和 API Key。")
         if not folder:
             raise ValueError("请选择素材/笔记目录。")
         output_format = self.format_var.get()
         custom_format = self.custom_format_var.get().strip()
-        if output_format == CUSTOM_FORMAT and not custom_format:
+        if require_ai and output_format == CUSTOM_FORMAT and not custom_format:
             raise ValueError("请选择‘其他（自定义）’后，请填写想要的文件形式，例如 HTML (.html) 或 JSON (.json)。")
-        if output_format == CUSTOM_FORMAT:
+        if require_ai and output_format == CUSTOM_FORMAT:
             custom_extension(custom_format)
         Path(folder).mkdir(parents=True, exist_ok=True)
         idle_seconds = int(self.idle_var.get())
         capture_interval_seconds = int(self.capture_interval_var.get())
+        screenshot_difference_percent = validate_difference_percent(self.screenshot_difference_var.get())
         clash_port = int(self.clash_port_var.get())
         use_clash = self.use_clash_var.get() and provider_needs_clash(provider)
-        if use_clash and not self.clash_path_var.get().strip():
+        if require_ai and use_clash and not self.clash_path_var.get().strip():
             raise ValueError("已启用 Clash Verge，请选择 Clash Verge 程序文件。")
         if self.ai_schedule_enabled_var.get():
             validate_window(self.ai_schedule_start_var.get().strip(), self.ai_schedule_end_var.get().strip())
@@ -2510,6 +2715,7 @@ class LessonNotesApp:
             capture_mode=self.capture_mode_var.get(),
             capture_interval_seconds=max(1, min(3600, capture_interval_seconds)),
             skip_duplicate_screenshots=self.skip_duplicates_var.get(),
+            screenshot_difference_percent=screenshot_difference_percent,
             idle_seconds=max(10, min(600, idle_seconds)),
             clash_path=self.clash_path_var.get().strip(),
             clash_port=clash_port,
@@ -2517,13 +2723,13 @@ class LessonNotesApp:
         )
         return settings
 
-    def _save_settings(self) -> bool:
+    def _save_settings(self, require_ai: bool = True) -> bool:
         try:
-            settings = self._collect_settings()
+            settings = self._collect_settings(require_ai=require_ai)
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             CONFIG_FILE.write_text(json.dumps(asdict(settings), ensure_ascii=False, indent=2), encoding="utf-8")
             key = self.key_var.get().strip()
-            if settings.provider != "chatgpt_oauth":
+            if settings.provider != "chatgpt_oauth" and key:
                 try:
                     import keyring
                     keyring.set_password(KEYRING_SERVICE, settings.provider, key)
@@ -2538,12 +2744,15 @@ class LessonNotesApp:
             return False
 
     def _start(self) -> None:
+        if self._batch_active():
+            messagebox.showinfo("批量处理进行中", "请先停止整批处理，再开始录课。")
+            return
         if self.session and (self.session.recording or self.session.importing or self.session.generating):
             messagebox.showinfo("任务进行中", "请先结束当前录课或等待笔记生成完成。")
             return
-        if not self._save_settings():
+        if not self._save_settings(require_ai=False):
             return
-        if self.settings.capture_region_only:
+        if self.settings.material_mode != "仅转写" and self.settings.capture_region_only:
             if (
                 not self.settings.capture_region
                 or self.settings.capture_region_monitor_index != self.settings.monitor_index
@@ -2551,20 +2760,19 @@ class LessonNotesApp:
                 self._select_capture_region()
                 if not self.capture_region or self.capture_region_monitor_index != self._selected_monitor_index():
                     return
-                if not self._save_settings():
+                if not self._save_settings(require_ai=False):
                     return
-        needed_modules = ["requests"]
+        needed_modules = []
         if self.settings.material_mode != "仅转写":
             needed_modules.extend(["mss", "PIL"])
         if self.settings.material_mode != "仅截图":
             needed_modules.extend(["soundcard", "faster_whisper", "numpy", "opencc"])
-        if self.settings.provider == "chatgpt_oauth":
-            needed_modules.append("jwt")
         missing = [module for module in needed_modules if importlib.util.find_spec(module) is None]
         if missing:
             messagebox.showerror("缺少依赖", "请先按 README 安装依赖：\n\n" + ", ".join(missing))
             return
         self.start_button.state(["disabled"])
+        self._video_buttons_state(["disabled"])
         self.stop_button.state(["disabled"])
         self.pause_button.state(["disabled"])
         self.generate_button.state(["disabled"])
@@ -2587,6 +2795,7 @@ class LessonNotesApp:
         except Exception as exc:
             self.root.deiconify()
             self.start_button.state(["!disabled"])
+            self._video_buttons_state(["!disabled"])
             messagebox.showerror("无法开始", str(exc))
 
     def _status_from_thread(self, message: str) -> None:
@@ -2602,19 +2811,19 @@ class LessonNotesApp:
                 self.pause_button.configure(text=button_text)
                 if self.recording_control_pause_button:
                     self.recording_control_pause_button.configure(text=button_text)
-        self.root.after(0, update_status)
+        self._post_to_ui(update_status)
 
     def _capture_finished_from_thread(self, issue: str | None, session_dir: Path) -> None:
-        self.root.after(0, lambda: self._capture_finished(issue, session_dir))
+        self._post_to_ui(lambda: self._capture_finished(issue, session_dir))
 
     def _generation_finished_from_thread(self, path: Path | None, issue: str | None, session_dir: Path) -> None:
-        self.root.after(0, lambda: self._generation_finished(path, issue, session_dir))
+        self._post_to_ui(lambda: self._generation_finished(path, issue, session_dir))
 
     def _capture_finished(self, issue: str | None, session_dir: Path) -> None:
         self.root.deiconify()
         self._hide_recording_controls()
         self.start_button.state(["!disabled"])
-        self.video_button.state(["!disabled"])
+        self._video_buttons_state(["!disabled"])
         self.stop_button.configure(text="结束录课")
         self.stop_button.state(["disabled"])
         self.pause_button.configure(text="暂停录课")
@@ -2638,7 +2847,7 @@ class LessonNotesApp:
                 self.status_var.set("视频导入未完成；已保存的素材可检查后生成，完整处理请重新导入原视频。")
             else:
                 warnings = self.session.source_metadata.get("warnings", [])
-                self.status_var.set("视频素材已准备好，正在进入笔记生成流程。" + " ".join(warnings))
+                self.status_var.set(("视频素材已准备好，正在进入笔记生成流程。" if auto_generate else "素材已保存，不转写或生成笔记。" if self.settings.material_mode == "仅截图" else "转写稿已保存，不生成笔记。") + " ".join(warnings))
         if self.close_after_finish:
             self.root.destroy()
         elif auto_generate and not issue:
@@ -2649,7 +2858,7 @@ class LessonNotesApp:
         self.cancel_generation_button.configure(text="终止 AI 生成")
         self.cancel_generation_button.state(["disabled"])
         self.start_button.state(["!disabled"])
-        self.video_button.state(["!disabled"])
+        self._video_buttons_state(["!disabled"])
         self.stop_button.state(["disabled"])
         self.pause_button.state(["disabled"])
         self.pending_session_dir = session_dir
@@ -2717,6 +2926,9 @@ class LessonNotesApp:
             self.generation_pause_button.configure(text="继续生成")
 
     def _resume_recording(self) -> None:
+        if self._batch_active():
+            messagebox.showinfo("批量处理进行中", "请先停止整批处理，再继续录课。")
+            return
         session_dir = self.pending_session_dir
         if not session_dir or not session_dir.is_dir():
             messagebox.showinfo("没有可恢复记录", "请先选择课程记录目录。")
@@ -2734,6 +2946,8 @@ class LessonNotesApp:
             "monitor_index": state.get("monitor_index", self.settings.monitor_index),
             "capture_mode": state.get("capture_mode", self.settings.capture_mode),
             "capture_interval_seconds": state.get("capture_interval_seconds", self.settings.capture_interval_seconds),
+            "skip_duplicate_screenshots": state.get("skip_duplicate_screenshots", self.settings.skip_duplicate_screenshots),
+            "screenshot_difference_percent": state.get("screenshot_difference_percent", self.settings.screenshot_difference_percent),
             "capture_region_only": state.get("capture_region_only", self.settings.capture_region_only),
             "capture_region": state.get("capture_region", self.settings.capture_region),
             "capture_region_monitor_index": state.get("capture_region_monitor_index", self.settings.capture_region_monitor_index),
@@ -2752,6 +2966,7 @@ class LessonNotesApp:
         try:
             self.session.start(resume=True)
             self.start_button.state(["disabled"])
+            self._video_buttons_state(["disabled"])
             self.generate_button.state(["disabled"])
             self.resume_button.state(["disabled"])
             self.stop_button.state(["!disabled"])
@@ -2763,6 +2978,9 @@ class LessonNotesApp:
             messagebox.showerror("无法继续录课", str(exc))
 
     def _merge_sessions(self) -> None:
+        if self._batch_active():
+            messagebox.showinfo("批量处理进行中", "请先停止整批处理，再合并其他记录。")
+            return
         if self.session and (self.session.recording or self.session.importing or self.session.generating):
             messagebox.showinfo("任务进行中", "请先结束当前录课或等待笔记生成完成。")
             return
@@ -3076,6 +3294,9 @@ class LessonNotesApp:
         return result["continue"]
 
     def _generate_notes(self) -> None:
+        if self._batch_active():
+            messagebox.showinfo("批量处理进行中", "请等待整批处理完成，或停止整批处理后重试。")
+            return
         if self.session and (self.session.importing or self.session.generating):
             messagebox.showinfo("任务进行中", "请等待当前任务结束后再生成笔记。")
             return
@@ -3124,7 +3345,7 @@ class LessonNotesApp:
                 session_dir=session_dir,
             )
         self.start_button.state(["disabled"])
-        self.video_button.state(["disabled"])
+        self._video_buttons_state(["disabled"])
         self.generate_button.state(["disabled"])
         self.resume_button.state(["disabled"])
         try:
@@ -3136,7 +3357,7 @@ class LessonNotesApp:
             self.status_var.set("正在生成笔记；可以暂停后续提交，成功完成的截图组会保存检查点。")
         except Exception as exc:
             self.start_button.state(["!disabled"])
-            self.video_button.state(["!disabled"])
+            self._video_buttons_state(["!disabled"])
             self.generate_button.state(["!disabled"])
             self.generation_pause_button.configure(text="暂停后续提交")
             self.generation_pause_button.state(["disabled"])
@@ -3145,6 +3366,9 @@ class LessonNotesApp:
             messagebox.showerror("无法生成", str(exc))
 
     def _cancel_generation(self) -> None:
+        if self._batch_active():
+            self._cancel_video_batch()
+            return
         if not self.session or not self.session.generating:
             return
         self.cancel_generation_button.configure(text="正在终止…")
@@ -3152,6 +3376,9 @@ class LessonNotesApp:
         self.session.cancel_generation()
 
     def _stop(self) -> None:
+        if self._batch_active():
+            self._cancel_video_batch()
+            return
         self.generate_after_video_import = False
         if self.session:
             self.stop_button.state(["disabled"])
@@ -3172,6 +3399,11 @@ class LessonNotesApp:
             messagebox.showerror("诊断报告保存失败", str(exc))
 
     def _close(self) -> None:
+        if self._batch_active():
+            self.close_after_finish = True
+            self._cancel_video_batch()
+            self.root.iconify()
+            return
         if self.session and self.session.importing:
             self.generate_after_video_import = False
             self.close_after_finish = True
@@ -3217,7 +3449,13 @@ def main() -> None:
         style.configure("TEntry", padding=4)
     except Exception:
         pass
-    LessonNotesApp(root)
+    ui = LessonNotesApp(root)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--screenshots-queue", type=Path)
+    args = parser.parse_args()
+    if args.screenshots_queue:
+        root.after(150, lambda: ui.start_screenshots_queue(args.screenshots_queue))
     root.mainloop()
 
 

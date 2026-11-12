@@ -1,18 +1,19 @@
-# Local Python environments and caches
 .venv/
-venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-
-# Local settings and credentials
 .env
 .env.*
-!.env.example
 settings.json
-siwc-credentials.bin
-
-# Logs and operating-system files
+session_state.json
+generation_checkpoint.json
+video_frames.json
+transcript.txt
+screenshots/
+批量导入_*.json
 *.log
+!.env.example
+siwc-credentials.bin
+backups/
 .DS_Store
 Thumbs.db

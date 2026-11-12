@@ -1,5 +1,25 @@
 # 课堂笔记自动整理
 
+
+
+## 2026-11-12：独立素材任务与窗口修复
+
+- 单个视频可直接点“视频仅保存截图…”或“视频仅转写音频…”，只生成本地图片或转写稿，不调用 AI、不生成笔记，也不要求 AI 登录或 Key。
+- 批量导入可明确选择仅截图、仅转写、仅保存截图和转写，或采集后生成笔记。主界面选“仅截图”时，批量窗口默认也只截图；纯素材模式不会自动生成笔记。
+- 实时录课可以不配置 AI 先采集素材；只有主动点击“生成／重试”才检查 AI 设置。转写仅在本机完成，首次模型下载仍需网络。
+- 批量和视频选区弹窗使用固定底部操作栏，中间区域可滚动；小屏和系统缩放下无需手动拉大才能看到继续按钮。
+- 录课控制窗新增“显示主窗口”，可恢复最小化主窗口和其活跃弹窗，并将离屏窗口移回可见区域。后台进度通过队列返回界面，不直接跨线程调用 Tk。
+
+## 项目简介 / Project Overview
+
+**中文**
+
+课堂笔记自动整理是一款面向 Windows 的 AI 辅助笔记工具，可将本地课程视频或录课时采集的画面与系统音频整理为按知识主题组织的学习笔记。程序在本机转写讲解，并结合截图生成便于理解、复习与自测的内容。支持视频片段选择与画面框选、多种 AI 服务、生成检查点恢复，以及按本机时区或 GMT 固定时差设置 AI 提交时段；可导出 Word、PDF、LaTeX 和 Markdown。
+
+**English**
+
+Lesson Notes Automation is an AI-assisted note-taking tool for Windows that turns local lecture videos or captured screen visuals and system audio into topic-organized study notes. It transcribes speech locally and combines transcripts with screenshots to support understanding, review, and self-assessment. Features include video time-range and region selection, multiple AI providers, checkpoint-based generation recovery, and request scheduling using local time or fixed GMT offsets. Notes can be exported to Word, PDF, LaTeX, and Markdown.
+
 ## 2026-11-11：分享包校验与故障反馈
 
 - 请将本次分享包完整解压到新文件夹，关闭旧窗口后再启动；窗口标题应包含 `2026.11.11`。旧的 `v2026.11.08.zip` 分享包未包含中文转写修复，不能仅凭文件名判断程序是否已更新。
@@ -15,15 +35,28 @@
 - 所有新写入转写稿的汉字通过 OpenCC 统一为**简体中文**，保留英文术语、数字、公式和时间标记。此转换处理简繁字形，不会把已识别为英文的句子翻译回中文。
 - 首次更新后请关闭旧窗口，再双击启动器；启动器会安装新增的简繁转换依赖。已保存的错误转写不会自动重写：请重新导入原视频，或重新录制后生成笔记。
 
-## 项目简介 / Project Overview
+## 2026-11-08 更新：批量导入与智能去重
 
-**中文**
+- 新增 **“批量导入视频…”**：按 Ctrl / Shift 一次多选文件，队列中可继续添加、移除或调整顺序；每个视频可单独设置时间段和截图选区。默认处理完整视频和完整画面。
+- 每个视频以原文件名独立保存素材及笔记；同名视频自动使用不同目录，不覆盖旧记录。默认连续自动生成，也可选择逐个检查截图，或取消自动生成，只批量导入素材（此时无需配置 AI 账号或 API Key）。
+- 单个视频导入或生成失败会保留素材，继续处理下一项；最后统一汇总结果。主界面显示当前视频和队列状态；点击 **“停止整批处理”** 会取消当前导入 / AI 生成并停止后续项目，已保存的内容保留。处理清单保存在素材目录的 `批量导入_日期_编号.json` 中；失败项可通过“选择已有记录…”载入后生成 / 重试。批量队列中断后不会自动续接剩余视频，可重新选择未处理项目导入。
+- 新增 **截图差异比例，默认 15%**：当前画面与**上一张实际保留的截图**相比，有效变化面积不足 15% 就跳过；达到或超过 15% 才保留。调大数值保留更少，调小保留更多，设为 0 关闭相似过滤。变化模式始终使用此比例；定时模式可通过“定时模式也过滤”开关控制。
+- 差异是对缩小、轻微平滑后的彩色画面计算显著变化像素的面积占比，忽略细微压缩噪点；不是对知识内容重要性的判断。15% 是较强筛选，小范围新增文字可能被略过，需要保留逐条板书或小改动时可调至 5% 或更低。有框选时只比较选区内画面，建议排除讲师人像、滚动字幕和播放器控制区。
+- 新比例同时用于本地视频和实时录课；略过的帧不更新比较基准，小变化会相对上一张保留图累积。变化模式仍等待画面短暂稳定，并保留视频结尾尚未来得及等待的不同页面。
+- 批量自动生成不逐个弹出完成提示；资料超过原有整章提示阈值（60 张图 / 原始图片 40 MB / 转写 10 万字符）时，自动对该视频改用“分组分析后合成”。AI 提交时间及 GMT 时区设置继续生效，等待期间请保持软件运行。
+- 窗口标题为 **`2026.11.08 · 批量导入与智能去重版`**。旧版没有差异比例的配置会自动采用 15%，其余配置和已授权账号继续保留。
 
-课堂笔记自动整理是一款面向 Windows 的 AI 辅助笔记工具，可将本地课程视频或录课时采集的画面与系统音频整理为按知识主题组织的学习笔记。程序在本机转写讲解，并结合截图生成便于理解、复习与自测的内容。支持视频片段选择与画面框选、多种 AI 服务、生成检查点恢复，以及按本机时区或 GMT 固定时差设置 AI 提交时段；可导出 Word、PDF、LaTeX 和 Markdown。
+### 快速使用
 
-**English**
+1. 关闭旧版窗口，双击原来的桌面快捷方式，确认窗口标题带 `2026.11.08`。
+2. 截图设置中将差异比例保持 **15%**；定时截图时保留“定时模式也过滤”的勾选。
+3. 点击 **“批量导入视频…”**，多选视频，按需调整队列、设置各视频的时间段 / 选区。
+4. 想连续完成全部笔记，保持“导入后自动生成笔记”勾选，关闭“逐个检查截图”；想先保存所有素材，取消自动生成。
+5. 点击 **“开始批量处理”**。完成后在所选素材目录查看各视频的文件夹及批量处理清单。
 
-Lesson Notes Automation is an AI-assisted note-taking tool for Windows that turns local lecture videos or captured screen visuals and system audio into topic-organized study notes. It transcribes speech locally and combines transcripts with screenshots to support understanding, review, and self-assessment. Features include video time-range and region selection, multiple AI providers, checkpoint-based generation recovery, and request scheduling using local time or fixed GMT offsets. Notes can be exported to Word, PDF, LaTeX, and Markdown.
+### 本地验证
+
+使用启动器的私有 Python 运行 `python -m unittest discover -s tests -v`。测试使用生成的短视频和模拟 AI 响应，不向真实 AI 服务提交课程素材，也不消耗 AI 额度。
 
 ## 2026-11-07 更新
 
@@ -160,6 +193,8 @@ Python 包可能引入传递依赖和模型权重。上表不是完整 SBOM；�
 - `lesson_notes_automation.py`：桌面应用源码
 - `ai_schedule.py`：每天 AI 请求提交时段、跨午夜计算及限额延后规则
 - `video_import.py`：本地视频画面提取、音轨分段转写及视频时间索引
+- `video_batch.py`：批量队列、逐个视频处理和批量清单
+- `screenshot_filter.py`：彩色画面变化面积比较及可调百分比过滤
 - `video_region.py`：本地视频预览、跳转指定时间及原视频像素区域框选
 - `siwc_auth.py`：Sign in with ChatGPT 的本机 OAuth/PKCE 回调和令牌管理
 - `requirements.txt`：Python 运行依赖
@@ -171,7 +206,7 @@ Python 包可能引入传递依赖和模型权重。上表不是完整 SBOM；�
 
 ## 学习笔记生成风格
 
-笔记以知识主题为主线整合截图与讲解，用连贯段落讲清概念及其理由，并根据内容需要加入对比表格、案例分析、概念辨析、学习要点、复习提纲和自测题。保留核心细节，合并重复内容，减少零碎标题，便于系统理解与复习。内容以所提供的资料为依据，不补造资料外的事实。
+笔记以知识主题为主线整合截图与讲解，用连贯段落说明概念及其理由，适当加入对比表格、案例分析、概念辨析、学习要点、复习提纲和自测题。保留核心细节，合并重复内容，减少零碎标题；以提供的资料为依据，不补造资料外的事实。
 
 
 ## 生成模式
