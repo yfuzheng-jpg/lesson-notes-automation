@@ -251,6 +251,23 @@ Y = A K^{\alpha}(hL)^{1-\alpha}
         self.assertIn(r'a=5.43\,\text{\AA}', tex)
         self.assertNotIn(r'\textbackslash', tex)
 
+    def test_math_table_pipes_and_chinese_labels(self):
+        markdown = r'''| 参数 | \(\left|x\right|\) | $|y|$ |
+| --- | --- | --- |
+| \(\mathrm{扩}\) | \(n、p\) | \(\text{浓度、温度}\) |
+
+\[\begin{array}{c|c}a&b\\\hline c&d\end{array}\rightleftarrows\text{①}\]
+'''
+        rows = json.loads(app._markdown_blocks(markdown)[0][1])
+        self.assertEqual([len(row) for row in rows], [3, 3])
+        self.assertEqual(rows[0][1], r'\(\left|x\right|\)')
+        tex = app._markdown_to_latex(markdown, 'Test')
+        self.assertIn(r'\text{扩}', tex)
+        self.assertIn(r'\(n,\,p\)', tex)
+        self.assertIn(r'\text{浓度、温度}', tex)
+        self.assertIn(r'\rightleftarrows\text{(1)}', tex)
+        self.assertNotIn(r'\textbackslash', tex)
+
 
 if __name__ == '__main__':
     unittest.main()

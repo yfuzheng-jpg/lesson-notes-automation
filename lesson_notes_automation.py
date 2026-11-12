@@ -728,7 +728,24 @@ def _markdown_blocks(markdown: str) -> list[tuple[str, str]]:
     blocks: list[tuple[str, str]] = []
     lines = markdown.splitlines()
     def cells(line: str) -> list[str]:
-        return [cell.strip() for cell in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+        text = line.strip()
+        protected = [match.span() for match in re.finditer(r"`[^`]*`|\\\(.*?\\\)|(?<![\\$])\$(?!\$).+?(?<!\\)\$(?!\$)", text)]
+        separators = []
+        for index, char in enumerate(text):
+            if char != "|" or any(start <= index < end for start, end in protected):
+                continue
+            preceding = index - 1
+            while preceding >= 0 and text[preceding] == "\\":
+                preceding -= 1
+            if (index - preceding - 1) % 2 == 0:
+                separators.append(index)
+        boundaries = [-1, *separators, len(text)]
+        result = [text[start + 1:end].strip() for start, end in zip(boundaries, boundaries[1:])]
+        if separators and separators[-1] == len(text) - 1:
+            result.pop()
+        if separators and separators[0] == 0:
+            result.pop(0)
+        return result
     index = 0
     while index < len(lines):
         line = lines[index].strip()
@@ -766,6 +783,7 @@ def _plain_inline(value: str) -> str:
 def _markdown_to_latex(markdown: str, title: str) -> str:
     roman_text = dict(zip("ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫⅬⅭⅮⅯ", ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "L", "C", "D", "M")))
     roman_text.update({key.lower(): value.lower() for key, value in roman_text.items()})
+    roman_text.update({chr(0x2460 + index): f"({index + 1})" for index in range(20)})
     roman_translation = str.maketrans(roman_text)
     markdown = markdown.replace("\r\n", "\n").replace("\r", "\n").translate(roman_translation)
     title = title.translate(roman_translation)
@@ -777,6 +795,8 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
 
     math_commands.update("AA aa textnormal textrm textsf texttt textit textbf textup emph mbox".split())
 
+    math_commands.update("hline cline rightleftarrows leftrightarrows rightleftharpoons leftrightharpoons".split())
+
     math_commands.update("kappa varsigma digamma hslash angle measuredangle sphericalangle xrightarrow xleftarrow Rightarrow Leftarrow Leftrightarrow Longrightarrow Longleftarrow mapsto longmapsto hookrightarrow hookleftarrow uparrow downarrow updownarrow nearrow searrow nwarrow swarrow lceil rceil lfloor rfloor lVert rVert not ni supset supseteq nsubseteq nsupseteq land lor neg wedge vee bigcup bigcap bigoplus bigotimes coprod oint iiiint iiint vdots ddots cdotp bullet star circledast circledcirc circleddash cong asymp prec succ preceq succeq triangleq doteq leqq geqq lesssim gtrsim lessapprox gtrapprox varnothing mathsf mathtt mathfrak mathnormal big Big bigg Bigg bigl bigr Bigl Bigr biggl biggr Biggl Biggr bigm Bigm biggm Biggm textstyle scriptstyle scriptscriptstyle limits nolimits nonumber notag vphantom hphantom phantom arg deg dim hom inf sup ker lg cot sec csc coth arctan check breve acute grave mathstrut ensuremath".split())
 
     def safe_math(value: str) -> bool:
@@ -784,9 +804,27 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
         environments = re.findall(r"\\(?:begin|end)\s*\{([^}]+)\}", value)
         return commands <= math_commands and "^^" not in value and all(env in {"aligned", "alignedat", "gathered", "cases", "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix", "array"} for env in environments) and not re.search(r"(?<!\\)[%#]", value)
 
+    def normalize_math(value: str) -> str:
+        value = re.sub(r"\\(?:mathrm|mathsf|mathbf|mathit|mathtt)\{([^{}]*[\u3400-\u9fff][^{}]*)\}", lambda match: r"\text{" + match.group(1) + "}", value)
+        protected = []
+        for match in re.finditer(r"\\(?:text|textnormal|textrm|textsf|texttt|textit|textbf|textup|mbox)\s*\{", value):
+            depth, end = 1, match.end()
+            while end < len(value) and depth:
+                if value[end] == "\\":
+                    end += 2
+                    continue
+                if value[end] == "{":
+                    depth += 1
+                elif value[end] == "}":
+                    depth -= 1
+                end += 1
+            protected.append((match.start(), end))
+        return "".join(r",\," if char == "、" and not any(start <= index < end for start, end in protected) else char for index, char in enumerate(value))
+
     displays: dict[str, str] = {}
     def display(match) -> str:
         value = match.group(1) if match.group(1) is not None else match.group(2)
+        value = normalize_math(value)
         if not safe_math(value):
             return match.group(0)
         token = f"LESSONMATHBLOCK{len(displays)}TOKEN"
@@ -798,7 +836,7 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
         mapping = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
         def plain(text: str) -> str:
             def escaped(fragment: str) -> str:
-                return "".join(mapping.get(char, char) for char in _plain_inline(fragment))
+                return "".join(mapping.get(char, char) for char in _plain_inline(fragment).replace(r"\|", "|"))
             pieces = []
             position = 0
             for strong in re.finditer(r"\*\*(.+?)\*\*", text):
@@ -811,6 +849,7 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
         for match in re.finditer(r"\\\((.*?)\\\)|(?<![\\$])\$(?!\$)(.+?)(?<!\\)\$(?!\$)", value):
             parts.append(plain(value[end:match.start()]))
             math = match.group(1) if match.group(1) is not None else match.group(2)
+            math = normalize_math(math)
             parts.append(r"\(" + math + r"\)" if safe_math(math) else plain(match.group(0)))
             end = match.end()
         parts.append(plain(value[end:]))
