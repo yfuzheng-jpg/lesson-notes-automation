@@ -769,7 +769,7 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
 
     math_commands.update("hbar nabla ell varrho vartheta propto sim simeq ll gg perp parallel langle rangle lvert rvert vert Vert boldsymbol mathcal dot ddot tilde widetilde widehat Im Re dagger ast otimes oplus sinh cosh tanh arcsin arccos arctan substack overset underset boxed".split())
 
-    math_commands.update("circ zeta eta xi upsilon varpi varkappa Upsilon Xi pmod bmod mod det gcd Pr iff implies leftrightarrow Longleftrightarrow mathring smallsetminus setminus cup cap emptyset".split())
+    math_commands.update("circ zeta eta xi upsilon varpi varkappa Upsilon Xi pmod bmod mod det gcd Pr iff implies leftrightarrow Longleftrightarrow longrightarrow longleftarrow mathring smallsetminus setminus cup cap emptyset".split())
 
     def safe_math(value: str) -> bool:
         commands = set(re.findall(r"\\([A-Za-z]+)", value))
@@ -789,7 +789,15 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
     def esc(value: str) -> str:
         mapping = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
         def plain(text: str) -> str:
-            return "".join(mapping.get(char, char) for char in _plain_inline(text))
+            def escaped(fragment: str) -> str:
+                return "".join(mapping.get(char, char) for char in _plain_inline(fragment))
+            pieces = []
+            position = 0
+            for strong in re.finditer(r"\*\*(.+?)\*\*", text):
+                pieces.extend([escaped(text[position:strong.start()]), r"\textbf{" + escaped(strong.group(1)) + "}"])
+                position = strong.end()
+            pieces.append(escaped(text[position:]))
+            return "".join(pieces)
         parts = []
         end = 0
         for match in re.finditer(r"\\\((.*?)\\\)|(?<![\\$])\$(?!\$)(.+?)(?<!\\)\$(?!\$)", value):
@@ -805,7 +813,8 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
         if kind == "bullet":
             if not in_list:
                 body.append(r"\begin{itemize}"); in_list = True
-            body.append(r"\item " + esc(text))
+            numbered = re.match(r"^(\d+)[.)]\s+(.*)$", text)
+            body.append((r"\item[" + numbered.group(1) + ".] " + esc(numbered.group(2))) if numbered else r"\item " + esc(text))
             continue
         if in_list:
             body.append(r"\end{itemize}"); in_list = False
@@ -832,7 +841,7 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
         r"\documentclass[UTF8]{ctexart}", r"\usepackage[a4paper,margin=2.2cm]{geometry}",
         r"\usepackage{hyperref,longtable,booktabs,array,fancyhdr,amsmath,amssymb}",
         r"\pagestyle{fancy}\fancyhf{}\fancyhead[L]{" + esc(title) + r"}\fancyhead[R]{课堂学习笔记}\fancyfoot[C]{\thepage}",
-        r"\setlength{\headheight}{15pt}\setlength{\parskip}{0.45em}",
+        r"\setlength{\headheight}{15pt}\setlength{\parskip}{0.45em}\setlength{\emergencystretch}{3em}",
         r"\begin{document}", r"\begin{center}\LARGE " + esc(title) + r"\end{center}",
         "", *body, r"\end{document}", "",
     ])

@@ -229,6 +229,20 @@ Y = A K^{\alpha}(hL)^{1-\alpha}
         self.assertNotIn(r'\input{secret.txt}', tex)
         self.assertNotIn('LESSONMATHBLOCK', tex)
 
+    def test_physics_formulas_and_windows_newlines(self):
+        markdown = "\\[\r\n\\boxed{\\hbar \\longrightarrow 60^\\circ}\\]\r\n"
+        tex = app._markdown_to_latex(markdown, 'Physics')
+        self.assertNotIn('\r', tex)
+        self.assertIn(r'\boxed{\hbar \longrightarrow 60^\circ}', tex)
+        self.assertNotIn(r'\textbackslash', tex)
+        self.assertNotIn('LESSONMATHBLOCK', tex)
+
+    def test_latex_emphasis_and_numbered_questions(self):
+        tex = app._markdown_to_latex('**重点**\n\n1. 第一题\n2. 第二题', 'Test')
+        self.assertIn(r'\textbf{重点}', tex)
+        self.assertIn(r'\item[2.] 第二题', tex)
+        self.assertNotIn(r'\item 2.', tex)
+
 
 if __name__ == '__main__':
     unittest.main()
