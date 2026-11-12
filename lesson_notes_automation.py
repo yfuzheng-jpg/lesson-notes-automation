@@ -768,6 +768,8 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
 
     math_commands.update("hbar nabla ell varrho vartheta propto sim simeq ll gg perp parallel langle rangle lvert rvert vert Vert boldsymbol mathcal dot ddot tilde widetilde widehat Im Re dagger ast otimes oplus sinh cosh tanh arcsin arccos arctan substack overset underset boxed".split())
 
+    math_commands.update("circ zeta eta xi upsilon varpi varkappa Upsilon Xi pmod bmod mod det gcd Pr iff implies leftrightarrow Longleftrightarrow mathring smallsetminus setminus cup cap emptyset".split())
+
     def safe_math(value: str) -> bool:
         commands = set(re.findall(r"\\([A-Za-z]+)", value))
         environments = re.findall(r"\\(?:begin|end)\s*\{([^}]+)\}", value)
