@@ -764,12 +764,18 @@ def _plain_inline(value: str) -> str:
 
 
 def _markdown_to_latex(markdown: str, title: str) -> str:
-    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n")
+    roman_text = dict(zip("ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫⅬⅭⅮⅯ", ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "L", "C", "D", "M")))
+    roman_text.update({key.lower(): value.lower() for key, value in roman_text.items()})
+    roman_translation = str.maketrans(roman_text)
+    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n").translate(roman_translation)
+    title = title.translate(roman_translation)
     math_commands = set("alpha beta gamma delta epsilon varepsilon theta lambda mu nu pi rho sigma tau phi varphi chi psi omega Gamma Delta Theta Lambda Pi Sigma Phi Psi Omega frac dfrac tfrac sqrt sum prod int iint lim sin cos tan log ln exp min max infty partial times cdot pm le ge leq geq ne neq approx equiv to rightarrow leftarrow in notin subset subseteq forall exists mathbb mathbf mathrm mathit text left right begin end underbrace overbrace overline hat vec bar quad qquad displaystyle operatorname binom dots ldots cdots".split())
 
     math_commands.update("hbar nabla ell varrho vartheta propto sim simeq ll gg perp parallel langle rangle lvert rvert vert Vert boldsymbol mathcal dot ddot tilde widetilde widehat Im Re dagger ast otimes oplus sinh cosh tanh arcsin arccos arctan substack overset underset boxed".split())
 
     math_commands.update("circ zeta eta xi upsilon varpi varkappa Upsilon Xi pmod bmod mod det gcd Pr iff implies leftrightarrow Longleftrightarrow longrightarrow longleftarrow mathring smallsetminus setminus cup cap emptyset".split())
+
+    math_commands.update("AA aa textnormal textrm textsf texttt textit textbf textup emph mbox".split())
 
     math_commands.update("kappa varsigma digamma hslash angle measuredangle sphericalangle xrightarrow xleftarrow Rightarrow Leftarrow Leftrightarrow Longrightarrow Longleftarrow mapsto longmapsto hookrightarrow hookleftarrow uparrow downarrow updownarrow nearrow searrow nwarrow swarrow lceil rceil lfloor rfloor lVert rVert not ni supset supseteq nsubseteq nsupseteq land lor neg wedge vee bigcup bigcap bigoplus bigotimes coprod oint iiiint iiint vdots ddots cdotp bullet star circledast circledcirc circleddash cong asymp prec succ preceq succeq triangleq doteq leqq geqq lesssim gtrsim lessapprox gtrapprox varnothing mathsf mathtt mathfrak mathnormal big Big bigg Bigg bigl bigr Bigl Bigr biggl biggr Biggl Biggr bigm Bigm biggm Biggm textstyle scriptstyle scriptscriptstyle limits nolimits nonumber notag vphantom hphantom phantom arg deg dim hom inf sup ker lg cot sec csc coth arctan check breve acute grave mathstrut ensuremath".split())
 

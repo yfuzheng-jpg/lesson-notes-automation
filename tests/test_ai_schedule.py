@@ -245,6 +245,12 @@ Y = A K^{\alpha}(hL)^{1-\alpha}
         self.assertIn(r'\item[2.] 第二题', tex)
         self.assertNotIn(r'\item 2.', tex)
 
+    def test_angstrom_units_and_roman_semiconductor_groups(self):
+        tex = app._markdown_to_latex('Ⅲ-Ⅴ族和Ⅰ族杂质\n\\[a=5.43\\,\\text{\\AA}\\]', 'Test')
+        self.assertIn('III-V族和I族杂质', tex)
+        self.assertIn(r'a=5.43\,\text{\AA}', tex)
+        self.assertNotIn(r'\textbackslash', tex)
+
 
 if __name__ == '__main__':
     unittest.main()
