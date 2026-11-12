@@ -764,6 +764,7 @@ def _plain_inline(value: str) -> str:
 
 
 def _markdown_to_latex(markdown: str, title: str) -> str:
+    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n")
     math_commands = set("alpha beta gamma delta epsilon varepsilon theta lambda mu nu pi rho sigma tau phi varphi chi psi omega Gamma Delta Theta Lambda Pi Sigma Phi Psi Omega frac dfrac tfrac sqrt sum prod int iint lim sin cos tan log ln exp min max infty partial times cdot pm le ge leq geq ne neq approx equiv to rightarrow leftarrow in notin subset subseteq forall exists mathbb mathbf mathrm mathit text left right begin end underbrace overbrace overline hat vec bar quad qquad displaystyle operatorname binom dots ldots cdots".split())
 
     math_commands.update("hbar nabla ell varrho vartheta propto sim simeq ll gg perp parallel langle rangle lvert rvert vert Vert boldsymbol mathcal dot ddot tilde widetilde widehat Im Re dagger ast otimes oplus sinh cosh tanh arcsin arccos arctan substack overset underset boxed".split())
