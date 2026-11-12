@@ -787,13 +787,21 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
     roman_translation = str.maketrans(roman_text)
     markdown = markdown.replace("\r\n", "\n").replace("\r", "\n").translate(roman_translation)
     title = title.translate(roman_translation)
+    subscript_digits = dict(zip("₀₁₂₃₄₅₆₇₈₉", "0123456789"))
+    superscript_digits = dict(zip("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789"))
+    def unquote_display(match) -> str:
+        value = match.group(0)
+        for _ in range(match.group("quotes").count(">")):
+            value = re.sub(r"(?m)^[ \t]*>[ \t]?", "", value)
+        return value
+    markdown = re.sub(r"(?ms)^[ \t]*(?P<quotes>(?:>[ \t]*)+)(?:\\\[.*?\\\]|\$\$.*?\$\$)", unquote_display, markdown)
     math_commands = set("alpha beta gamma delta epsilon varepsilon theta lambda mu nu pi rho sigma tau phi varphi chi psi omega Gamma Delta Theta Lambda Pi Sigma Phi Psi Omega frac dfrac tfrac sqrt sum prod int iint lim sin cos tan log ln exp min max infty partial times cdot pm le ge leq geq ne neq approx equiv to rightarrow leftarrow in notin subset subseteq forall exists mathbb mathbf mathrm mathit text left right begin end underbrace overbrace overline hat vec bar quad qquad displaystyle operatorname binom dots ldots cdots".split())
 
     math_commands.update("hbar nabla ell varrho vartheta propto sim simeq ll gg perp parallel langle rangle lvert rvert vert Vert boldsymbol mathcal dot ddot tilde widetilde widehat Im Re dagger ast otimes oplus sinh cosh tanh arcsin arccos arctan substack overset underset boxed".split())
 
     math_commands.update("circ zeta eta xi upsilon varpi varkappa Upsilon Xi pmod bmod mod det gcd Pr iff implies leftrightarrow Longleftrightarrow longrightarrow longleftarrow mathring smallsetminus setminus cup cap emptyset".split())
 
-    math_commands.update("AA aa textnormal textrm textsf texttt textit textbf textup emph mbox".split())
+    math_commands.update("AA aa textnormal textrm textsf texttt textit textbf textup emph mbox textsubscript textsuperscript mp".split())
 
     math_commands.update("hline cline rightleftarrows leftrightarrows rightleftharpoons leftrightharpoons".split())
 
@@ -819,7 +827,18 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
                     depth -= 1
                 end += 1
             protected.append((match.start(), end))
-        return "".join(r",\," if char == "、" and not any(start <= index < end for start, end in protected) else char for index, char in enumerate(value))
+        result = []
+        for index, char in enumerate(value):
+            in_text = any(start <= index < end for start, end in protected)
+            if char in subscript_digits:
+                result.append((r"\textsubscript{" if in_text else "_{") + subscript_digits[char] + "}")
+            elif char in superscript_digits:
+                result.append((r"\textsuperscript{" if in_text else "^{") + superscript_digits[char] + "}")
+            elif not in_text and char in "、：，；":
+                result.append({"、": r",\,", "：": ":", "，": r",\,", "；": ";"}[char])
+            else:
+                result.append(char)
+        return "".join(result)
 
     displays: dict[str, str] = {}
     def display(match) -> str:
@@ -834,6 +853,8 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
 
     def esc(value: str) -> str:
         mapping = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
+        mapping.update({char: r"\textsubscript{" + digit + "}" for char, digit in subscript_digits.items()})
+        mapping.update({char: r"\textsuperscript{" + digit + "}" for char, digit in superscript_digits.items()})
         def plain(text: str) -> str:
             def escaped(fragment: str) -> str:
                 return "".join(mapping.get(char, char) for char in _plain_inline(fragment).replace(r"\|", "|"))

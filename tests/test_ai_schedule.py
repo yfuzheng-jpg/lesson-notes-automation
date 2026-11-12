@@ -268,6 +268,16 @@ Y = A K^{\alpha}(hL)^{1-\alpha}
         self.assertIn(r'\rightleftarrows\text{(1)}', tex)
         self.assertNotIn(r'\textbackslash', tex)
 
+    def test_quoted_math_subscripts_and_fullwidth_punctuation(self):
+        markdown = '> \\[\n> x > 0\n> \\]\n\n\\[\n>0\n\\]\n\n**SiO₂**\n\\[\\mp Q,\\quad V：\\text{SiO₂}\\]'
+        tex = app._markdown_to_latex(markdown, 'SiO₂')
+        self.assertIn('\nx > 0\n', tex)
+        self.assertIn('\n>0\n', tex)
+        self.assertIn(r'\textbf{SiO\textsubscript{2}}', tex)
+        self.assertIn(r'\mp Q,\quad V:\text{SiO\textsubscript{2}}', tex)
+        self.assertNotIn(r'\textbackslash', tex)
+        self.assertNotIn('₂', tex)
+
 
 if __name__ == '__main__':
     unittest.main()
