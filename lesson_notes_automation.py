@@ -771,6 +771,8 @@ def _markdown_to_latex(markdown: str, title: str) -> str:
 
     math_commands.update("circ zeta eta xi upsilon varpi varkappa Upsilon Xi pmod bmod mod det gcd Pr iff implies leftrightarrow Longleftrightarrow longrightarrow longleftarrow mathring smallsetminus setminus cup cap emptyset".split())
 
+    math_commands.update("kappa varsigma digamma hslash angle measuredangle sphericalangle xrightarrow xleftarrow Rightarrow Leftarrow Leftrightarrow Longrightarrow Longleftarrow mapsto longmapsto hookrightarrow hookleftarrow uparrow downarrow updownarrow nearrow searrow nwarrow swarrow lceil rceil lfloor rfloor lVert rVert not ni supset supseteq nsubseteq nsupseteq land lor neg wedge vee bigcup bigcap bigoplus bigotimes coprod oint iiiint iiint vdots ddots cdotp bullet star circledast circledcirc circleddash cong asymp prec succ preceq succeq triangleq doteq leqq geqq lesssim gtrsim lessapprox gtrapprox varnothing mathsf mathtt mathfrak mathnormal big Big bigg Bigg bigl bigr Bigl Bigr biggl biggr Biggl Biggr bigm Bigm biggm Biggm textstyle scriptstyle scriptscriptstyle limits nolimits nonumber notag vphantom hphantom phantom arg deg dim hom inf sup ker lg cot sec csc coth arctan check breve acute grave mathstrut ensuremath".split())
+
     def safe_math(value: str) -> bool:
         commands = set(re.findall(r"\\([A-Za-z]+)", value))
         environments = re.findall(r"\\(?:begin|end)\s*\{([^}]+)\}", value)

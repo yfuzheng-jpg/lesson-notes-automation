@@ -230,10 +230,11 @@ Y = A K^{\alpha}(hL)^{1-\alpha}
         self.assertNotIn('LESSONMATHBLOCK', tex)
 
     def test_physics_formulas_and_windows_newlines(self):
-        markdown = "\\[\r\n\\boxed{\\hbar \\longrightarrow 60^\\circ}\\]\r\n"
+        markdown = "\\[\r\n\\boxed{\\hbar \\longrightarrow 60^\\circ}\\]\r\n\\[\\angle \\kappa \\xrightarrow{E} \\mathsf{T}\\]"
         tex = app._markdown_to_latex(markdown, 'Physics')
         self.assertNotIn('\r', tex)
         self.assertIn(r'\boxed{\hbar \longrightarrow 60^\circ}', tex)
+        self.assertIn(r'\angle \kappa \xrightarrow{E} \mathsf{T}', tex)
         self.assertNotIn(r'\textbackslash', tex)
         self.assertNotIn('LESSONMATHBLOCK', tex)
 
